@@ -47,7 +47,7 @@ export const analyzeSymptoms = async (req, res) => {
           data: {
             isGreeting: true,
             isSerious: false,
-            firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
+            firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor\n\nPlease describe your symptoms, and I'll help you find the best care.",
             suggestedSpeciality: null,
             explanation: null,
             recommendedDoctors: [],
@@ -59,7 +59,7 @@ export const analyzeSymptoms = async (req, res) => {
           data: {
             isGreeting: false,
             isSerious: false,
-            firstAidGuidance: "I'm a medical assistant powered by AI. I can:\n\n• Analyze your symptoms\n• Provide first-aid advice\n• Recommend the right doctor based on your condition\n• Help you understand when to seek immediate medical care\n\nHow can I help you today? Please describe any symptoms or health concerns you have.",
+            firstAidGuidance: "I'm a medical assistant powered by AI. I can:\n\n• Analyze your symptoms\n• Provide first-aid advice\n• Recommend the right doctor\n• Help you understand when to seek immediate care\n\nHow can I help you today?",
             suggestedSpeciality: null,
             explanation: null,
             recommendedDoctors: [],
@@ -72,7 +72,7 @@ export const analyzeSymptoms = async (req, res) => {
           data: {
             isGreeting: false,
             isSerious: false,
-            firstAidGuidance: "I'd like to help you better. Could you please describe your symptoms or health concern in more detail? For example:\n\n• What symptoms are you experiencing?\n• How long have you had them?\n• Any other relevant information?",
+            firstAidGuidance: "I'd like to help you better. Could you please describe your symptoms in more detail?\n\nFor example:\n• What symptoms are you experiencing?\n• How long have you had them?",
             suggestedSpeciality: null,
             explanation: null,
             recommendedDoctors: [],
