@@ -124,11 +124,13 @@ If this contains actual medical symptoms, analyze them and provide:
 }
 
 IMPORTANT RULES:
-- If the message is just "hi", "hello", "thanks", "thank you", etc., respond conversationally
-- Only suggest doctors when actual symptoms are described
+- If the message is just "hi", "hello", "thanks", "thank you", "ok", "okay", "yes", "no", or any non-medical conversation, respond with isGreeting: true and suggestedSpeciality: null
+- ONLY suggest doctors when the user describes ACTUAL MEDICAL SYMPTOMS (like "headache", "fever", "pain", "cough", etc.)
+- If the message is not about medical symptoms, set isGreeting: true and suggestedSpeciality: null
 - Only suggest specialities from this list: ${availableSpecialities.join(', ')}
 - If symptoms suggest an emergency, set isSerious: true
 - Keep responses helpful and friendly
+- DO NOT suggest doctors for general questions, greetings, or non-medical queries
 
 Available doctor specialities: ${availableSpecialities.join(', ')}
 
@@ -165,22 +167,29 @@ Respond ONLY with valid JSON, no additional text.`;
     } catch (parseError) {
       console.error('Error parsing Gemini response:', parseError);
       console.error('Raw response:', text);
-      // Fallback response
+      // Fallback response - check if it's a greeting first
+      const lowerInput = userInput.toLowerCase();
+      const isGreetingFallback = ['hi', 'hello', 'hey', 'thanks', 'thank you', 'ok', 'okay', 'yes', 'no'].some(
+        (word) => lowerInput === word || lowerInput.startsWith(word + ' ') || lowerInput.endsWith(' ' + word)
+      );
+      
       aiResponse = {
-        isGreeting: false,
+        isGreeting: isGreetingFallback,
         isSerious: false,
-        firstAidGuidance: 'Please consult a doctor for proper diagnosis and treatment.',
-        suggestedSpeciality: availableSpecialities[0] || 'General physician',
-        explanation: 'Based on your symptoms, a consultation is recommended.',
+        firstAidGuidance: isGreetingFallback 
+          ? "Hello! I'm here to help you with medical guidance. Please describe your symptoms, and I'll provide first-aid advice and suggest the right doctor for you."
+          : 'Please consult a doctor for proper diagnosis and treatment.',
+        suggestedSpeciality: isGreetingFallback ? null : (availableSpecialities[0] || 'General physician'),
+        explanation: isGreetingFallback ? null : 'Based on your symptoms, a consultation is recommended.',
       };
     }
 
-    // If it's a greeting, return early without doctor matching
-    if (aiResponse.isGreeting) {
+    // If it's a greeting or no speciality suggested, return early without doctor matching
+    if (aiResponse.isGreeting || !aiResponse.suggestedSpeciality) {
       return res.json({
         success: true,
         data: {
-          isGreeting: true,
+          isGreeting: aiResponse.isGreeting || false,
           isSerious: false,
           firstAidGuidance: aiResponse.firstAidGuidance || "Hello! I'm here to help you with medical guidance. Please describe your symptoms, and I'll provide first-aid advice and suggest the right doctor for you.",
           suggestedSpeciality: null,
