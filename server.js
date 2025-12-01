@@ -30,21 +30,25 @@ const startServer = async () => {
     // middlewares
     app.use(express.json())
     
-    // CORS configuration - allow all origins in development
+    // CORS configuration - allow all origins by default, restrict if ALLOWED_ORIGINS is set
     app.use(cors({
         origin: function (origin, callback) {
             // Allow requests with no origin (like mobile apps or curl requests)
             if (!origin) return callback(null, true);
-            // Allow all origins in development
-            if (process.env.NODE_ENV !== 'production') {
-                return callback(null, true);
-            }
-            // In production, you can specify allowed origins
-            const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
-            if (allowedOrigins.indexOf(origin) !== -1 || allowedOrigins.length === 0) {
-                callback(null, true);
+            
+            // If ALLOWED_ORIGINS is explicitly set, use it for restriction
+            const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',').map(o => o.trim()) : [];
+            
+            // If ALLOWED_ORIGINS is set and not empty, check against it
+            if (allowedOrigins.length > 0) {
+                if (allowedOrigins.indexOf(origin) !== -1) {
+                    callback(null, true);
+                } else {
+                    callback(new Error(`Origin ${origin} not allowed by CORS`));
+                }
             } else {
-                callback(new Error('Not allowed by CORS'));
+                // If ALLOWED_ORIGINS is not set, allow all origins (both dev and production)
+                callback(null, true);
             }
         },
         credentials: true,
