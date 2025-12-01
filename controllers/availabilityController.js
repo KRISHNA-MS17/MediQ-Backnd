@@ -62,7 +62,8 @@ export const createAvailability = async (req, res) => {
                         slotPeriod: period,
                         capacity,
                         isRecurring: true,
-                        recurringPattern: { daysOfWeek, repeatUntil, repeatCount }
+                        recurringPattern: { daysOfWeek, repeatUntil, repeatCount },
+                        isActive: true // Explicitly set to true
                     });
                     slots.push(slot);
                 }
@@ -77,7 +78,8 @@ export const createAvailability = async (req, res) => {
                 endTime,
                 slotPeriod: period,
                 capacity,
-                isRecurring: false
+                isRecurring: false,
+                isActive: true // Explicitly set to true
             });
             slots.push(slot);
         }
@@ -108,7 +110,7 @@ export const getAvailability = async (req, res) => {
             return res.json({ success: false, message: "Doctor ID required" });
         }
 
-        const query = { doctorId, isActive: true };
+        const query = { doctorId, isActive: true }; // Show only active slots
 
         if (date) {
             query.date = date;
@@ -274,7 +276,14 @@ export const getSlotsForDate = async (req, res) => {
 
                 // Build token array
                 const tokens = [];
-                const maxTokens = Math.max(slot.totalTokens, appointments.length, 5); // Show at least 5
+                // Always show at least 10 tokens for new slots, or more if there are bookings/capacity
+                const minTokens = 10;
+                const maxTokens = Math.max(
+                    slot.totalTokens || 0, 
+                    appointments.length, 
+                    slot.capacity || minTokens,
+                    minTokens
+                );
 
                 for (let i = 1; i <= maxTokens; i++) {
                     const appointment = appointments.find(apt => apt.slotTokenIndex === i);

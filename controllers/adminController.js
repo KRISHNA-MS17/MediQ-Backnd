@@ -11,7 +11,7 @@ const addDoctor = async (req, res) => {
 
     try {
 
-        const { name, email, password, speciality, degree, experience, about, fees, address } = req.body
+        const { name, email, password, speciality, degree, experience, about, fees, address, latitude, longitude } = req.body
         const imageFile = req.file
 
         // checking for all data to add doctor
@@ -85,6 +85,18 @@ const addDoctor = async (req, res) => {
             fees,
             address: JSON.parse(address),
             date: Date.now()
+        }
+
+        // Add location data if latitude and longitude are provided
+        if (latitude && longitude) {
+            const parsedAddress = typeof address === 'string' ? JSON.parse(address) : address;
+            doctorData.location = {
+                latitude: parseFloat(latitude),
+                longitude: parseFloat(longitude),
+                address: typeof parsedAddress === 'object' 
+                    ? `${parsedAddress.line1 || ''} ${parsedAddress.line2 || ''}`.trim()
+                    : parsedAddress
+            }
         }
 
         const newDoctor = new doctorModel(doctorData)
@@ -189,4 +201,137 @@ const adminDashboard = async (req, res) => {
     }
 }
 
-export {addDoctor, loginAdmin, allDoctors, appointmentsAdmin, appointmentCancel, adminDashboard}
+// API to delete doctor
+const deleteDoctor = async (req, res) => {
+    try {
+        console.log('Delete doctor request received:', req.body)
+        const { docId } = req.body
+
+        if (!docId) {
+            return res.json({ success: false, message: "Doctor ID is required" })
+        }
+
+        // Check if doctor exists
+        const doctor = await doctorModel.findById(docId)
+        if (!doctor) {
+            return res.json({ success: false, message: "Doctor not found" })
+        }
+
+        // Check if doctor has any appointments
+        const appointments = await appointmentModel.find({ docId })
+        if (appointments.length > 0) {
+            return res.json({ 
+                success: false, 
+                message: "Cannot delete doctor with existing appointments. Please cancel all appointments first." 
+            })
+        }
+
+        await doctorModel.findByIdAndDelete(docId)
+        console.log('Doctor deleted successfully:', docId)
+        res.json({ success: true, message: 'Doctor deleted successfully' })
+
+    } catch (error) {
+        console.error('Delete doctor error:', error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+// API to update doctor
+const updateDoctor = async (req, res) => {
+    try {
+        console.log('Update doctor request received')
+        console.log('Body:', req.body)
+        console.log('File:', req.file ? 'Present' : 'Not provided')
+        
+        const { docId, name, email, password, speciality, degree, experience, about, fees, address, latitude, longitude } = req.body
+        const imageFile = req.file
+
+        if (!docId) {
+            return res.json({ success: false, message: "Doctor ID is required" })
+        }
+
+        // Check if doctor exists
+        const doctor = await doctorModel.findById(docId)
+        if (!doctor) {
+            return res.json({ success: false, message: "Doctor not found" })
+        }
+
+        const updateData = {}
+
+        if (name) updateData.name = name
+        if (email) {
+            if (!validator.isEmail(email)) {
+                return res.json({ success: false, message: "Please enter a valid email" })
+            }
+            updateData.email = email
+        }
+        if (password) {
+            if (password.length < 8) {
+                return res.json({ success: false, message: "Password must be at least 8 characters long" })
+            }
+            const salt = await bcrypt.genSalt(10)
+            updateData.password = await bcrypt.hash(password, salt)
+        }
+        if (speciality) updateData.speciality = speciality
+        if (degree) updateData.degree = degree
+        if (experience) updateData.experience = experience
+        if (about) updateData.about = about
+        if (fees) updateData.fees = Number(fees)
+        if (address) updateData.address = typeof address === 'string' ? JSON.parse(address) : address
+
+        // Handle image upload if provided
+        if (imageFile) {
+            const cloudName = (process.env.CLOUDINARY_NAME || '').replace(/^["']|["']$/g, '').trim()
+            const apiKey = (process.env.CLOUDINARY_API_KEY || '').replace(/^["']|["']$/g, '').trim()
+            const apiSecret = (process.env.CLOUDINARY_SECRET_KEY || '').replace(/^["']|["']$/g, '').trim()
+
+            if (cloudName && apiKey && apiSecret && cloudName !== 'YOUR_CLOUDINARY_NAME') {
+                cloudinary.config({
+                    cloud_name: cloudName,
+                    api_key: apiKey,
+                    api_secret: apiSecret
+                })
+
+                try {
+                    const imageUpload = await cloudinary.uploader.upload(imageFile.path, { resource_type: "image" })
+                    updateData.image = imageUpload.secure_url
+                } catch (cloudinaryError) {
+                    console.error("Cloudinary upload error:", cloudinaryError)
+                    return res.json({ 
+                        success: false, 
+                        message: `Image upload failed: ${cloudinaryError.message}` 
+                    })
+                }
+            }
+        }
+
+        // Handle location data if latitude and longitude are provided
+        if (latitude && longitude) {
+            const parsedAddress = typeof address === 'string' ? JSON.parse(address) : address;
+            updateData.location = {
+                latitude: parseFloat(latitude),
+                longitude: parseFloat(longitude),
+                address: typeof parsedAddress === 'object' 
+                    ? `${parsedAddress.line1 || ''} ${parsedAddress.line2 || ''}`.trim()
+                    : parsedAddress
+            }
+        } else if (latitude !== undefined && longitude !== undefined && !latitude && !longitude) {
+            // Clear location if both are empty
+            updateData.location = {
+                latitude: null,
+                longitude: null,
+                address: ''
+            }
+        }
+
+        await doctorModel.findByIdAndUpdate(docId, updateData)
+        console.log('Doctor updated successfully:', docId)
+        res.json({ success: true, message: 'Doctor updated successfully' })
+
+    } catch (error) {
+        console.log(error)
+        res.json({ success: false, message: error.message })
+    }
+}
+
+export {addDoctor, loginAdmin, allDoctors, appointmentsAdmin, appointmentCancel, adminDashboard, deleteDoctor, updateDoctor}
