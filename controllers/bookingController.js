@@ -137,16 +137,32 @@ export const bookSlotToken = async (req, res) => {
             success: true,
             message: "Token booked successfully",
             appointment: {
-                _id: newAppointment._id,
+                _id: newAppointment._id.toString(),
+                appointmentId: newAppointment._id.toString(), // Alias for compatibility
                 slotTokenIndex: assignedTokenIndex,
                 tokenNumber: assignedTokenIndex, // For backward compatibility
                 estimatedStart,
                 estimatedTime: estimatedTimeFormatted, // Formatted time string (e.g., "10:00", "10:30")
                 estimatedWaitTime: Math.max(0, estimatedWaitTime), // Ensure non-negative
                 slotPeriod: slot.slotPeriod,
+                slotDate: slot.date,
+                slotTime: slot.startTime,
                 currentToken: slot.currentToken,
                 averageConsultationTime: slot.averageConsultationTime,
-                amount: docData.fees
+                amount: docData.fees,
+                docData: {
+                    name: docData.name,
+                    speciality: docData.speciality,
+                    image: docData.image,
+                    fees: docData.fees,
+                    address: docData.address,
+                    phone: docData.phone,
+                },
+                userData: {
+                    name: userData.name,
+                    email: userData.email,
+                    phone: userData.phone,
+                }
             }
         });
     } catch (error) {
