@@ -323,7 +323,7 @@ const seriousSymptoms = [
 ];
 
 /**
- * Rule-based symptom analysis
+ * Rule-based symptom analysis (fallback)
  */
 function analyzeSymptomsRuleBased(userInput) {
   const lowerInput = userInput.toLowerCase().trim();
@@ -509,7 +509,84 @@ async function findRecommendedDoctors(suggestedSpeciality, allDoctors) {
 }
 
 /**
- * Analyze symptoms using rule-based approach with AI fallback
+ * Use Gemini AI to analyze symptoms
+ */
+async function analyzeWithGemini(userInput, availableSpecialities) {
+  if (!genAI || !geminiApiKey) {
+    throw new Error('Gemini API not configured');
+  }
+
+  try {
+    // Get Gemini model - try gemini-1.5-pro first, fallback to gemini-pro
+    let model;
+    try {
+      model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
+    } catch (error) {
+      try {
+        model = genAI.getGenerativeModel({ model: 'gemini-pro' });
+      } catch (error2) {
+        // Try gemini-1.5-flash as another fallback
+        model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      }
+    }
+
+    const prompt = `You are a helpful medical assistant. Analyze the user's symptoms and provide guidance.
+
+User message: "${userInput}"
+
+Available doctor specialities in our system: ${availableSpecialities.join(', ')}
+
+Analyze the symptoms and respond with a JSON object in this exact format:
+{
+  "isGreeting": false,
+  "isSerious": false,
+  "suggestedSpeciality": "One of the available specialities or 'General Physician'",
+  "explanation": "Brief explanation of why this speciality is recommended",
+  "generalAdvice": "General medical advice for the symptoms",
+  "firstAidGuidance": "Detailed first-aid guidance with steps"
+}
+
+IMPORTANT RULES:
+- If the message is just a greeting (hi, hello, thanks, etc.) or very short (< 10 chars), set isGreeting: true and suggestedSpeciality: null
+- If symptoms indicate a serious emergency (severe chest pain, difficulty breathing, unconsciousness, etc.), set isSerious: true
+- Only suggest specialities from the available list: ${availableSpecialities.join(', ')}
+- If the suggested speciality is not in the list, use "General Physician"
+- Provide medically safe, helpful advice
+- Keep explanations clear and concise
+- Return ONLY valid JSON, no markdown, no additional text
+
+Respond with ONLY the JSON object:`;
+
+    const result = await model.generateContent(prompt);
+    const response = await result.response;
+    const text = response.text();
+
+    // Parse JSON response (remove markdown code blocks if present)
+    let aiResponse;
+    try {
+      const cleanedText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+      // Extract JSON from response if there's extra text
+      const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        aiResponse = JSON.parse(jsonMatch[0]);
+      } else {
+        aiResponse = JSON.parse(cleanedText);
+      }
+    } catch (parseError) {
+      console.error('Error parsing Gemini response:', parseError);
+      console.error('Raw response:', text);
+      throw new Error('Failed to parse AI response');
+    }
+
+    return aiResponse;
+  } catch (error) {
+    console.error('Gemini API error:', error);
+    throw error;
+  }
+}
+
+/**
+ * Analyze symptoms using Gemini AI with rule-based fallback
  */
 export const analyzeSymptoms = async (req, res) => {
   try {
@@ -523,7 +600,34 @@ export const analyzeSymptoms = async (req, res) => {
     }
 
     const userInput = symptoms.trim();
+    const lowerInput = userInput.toLowerCase();
     
+    // Check for greetings first (quick check)
+    const greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'howdy', 'hola', 'namaste', 'thanks', 'thank you'];
+    const isGreeting = greetings.some(
+      (greeting) =>
+        lowerInput === greeting ||
+        lowerInput.startsWith(greeting + ' ') ||
+        lowerInput.endsWith(' ' + greeting) ||
+        lowerInput.includes(' ' + greeting + ' ')
+    );
+    
+    if (isGreeting || userInput.length < 10) {
+      return res.json({
+        success: true,
+        data: {
+          isGreeting: true,
+          isSerious: false,
+          firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
+          suggestedSpeciality: null,
+          explanation: null,
+          recommendedDoctors: [],
+          generalAdvice: null,
+          firstAidSteps: null
+        },
+      });
+    }
+
     // Get all available doctors from database
     const doctors = await doctorModel
       .find({ available: true })
@@ -537,23 +641,84 @@ export const analyzeSymptoms = async (req, res) => {
       });
     }
 
-    // Perform rule-based analysis first
-    let analysisResult = analyzeSymptomsRuleBased(userInput);
-    
-    // If it's a greeting, return early
-    if (analysisResult.isGreeting) {
-      return res.json({
-        success: true,
-        data: {
-          ...analysisResult,
-          recommendedDoctors: [],
-        },
-      });
+    // Create a list of available specialities from database
+    const availableSpecialities = [...new Set(doctors.map((doc) => doc.speciality))];
+    // Always include General Physician as fallback
+    if (!availableSpecialities.some(s => s.toLowerCase().includes('general'))) {
+      availableSpecialities.push('General Physician');
     }
-    
+
+    let analysisResult;
+
+    // Try Gemini AI first if available
+    if (genAI && geminiApiKey) {
+      try {
+        console.log('Using Gemini AI for symptom analysis...');
+        const aiResponse = await analyzeWithGemini(userInput, availableSpecialities);
+        
+        // Validate and enhance AI response
+        if (aiResponse.isGreeting) {
+          return res.json({
+            success: true,
+            data: {
+              isGreeting: true,
+              isSerious: false,
+              firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
+              suggestedSpeciality: null,
+              explanation: null,
+              recommendedDoctors: [],
+              generalAdvice: null,
+              firstAidSteps: null
+            },
+          });
+        }
+
+        // Enhance AI response with rule-based first aid if available
+        let firstAidData = null;
+        for (const [condition, guidance] of Object.entries(firstAidGuidance)) {
+          if (lowerInput.includes(condition)) {
+            firstAidData = guidance;
+            break;
+          }
+        }
+
+        // Use AI's guidance or enhance with rule-based
+        const finalFirstAidGuidance = aiResponse.firstAidGuidance || aiResponse.generalAdvice || 
+          (firstAidData ? firstAidData.advice : 'Please consult a doctor for proper diagnosis and treatment.');
+        
+        const finalFirstAidSteps = firstAidData ? firstAidData.steps : 
+          (aiResponse.firstAidSteps || [
+            'Rest and stay hydrated',
+            'Monitor your symptoms',
+            'Avoid self-medication',
+            'Consult a doctor if symptoms persist',
+            `See a ${aiResponse.suggestedSpeciality || 'doctor'} for proper evaluation`
+          ]);
+
+        analysisResult = {
+          isGreeting: false,
+          isSerious: aiResponse.isSerious || false,
+          firstAidGuidance: finalFirstAidGuidance,
+          suggestedSpeciality: aiResponse.suggestedSpeciality || 'General Physician',
+          explanation: aiResponse.explanation || 'Based on your symptoms, a consultation is recommended.',
+          generalAdvice: aiResponse.generalAdvice || finalFirstAidGuidance,
+          firstAidSteps: finalFirstAidSteps
+        };
+
+        console.log('Gemini AI analysis successful');
+      } catch (aiError) {
+        console.error('Gemini AI error, falling back to rule-based:', aiError.message);
+        // Fall back to rule-based analysis
+        analysisResult = analyzeSymptomsRuleBased(userInput);
+      }
+    } else {
+      // Use rule-based analysis if Gemini not available
+      console.log('Using rule-based analysis (Gemini not configured)');
+      analysisResult = analyzeSymptomsRuleBased(userInput);
+    }
+
     // If it's serious, return immediately with emergency guidance
     if (analysisResult.isSerious) {
-      // Still try to find emergency/available doctors
       const emergencyDoctors = await findRecommendedDoctors('General Physician', doctors);
       return res.json({
         success: true,
@@ -636,7 +801,7 @@ export const analyzeSymptoms = async (req, res) => {
       const doctors = await doctorModel
         .find({ available: true })
         .select(['name', 'speciality', 'degree', 'experience', 'fees', 'about', 'image', '_id'])
-        .limit(3)
+        .limit(10)
         .lean();
       
       const recommendedDoctors = await findRecommendedDoctors(
