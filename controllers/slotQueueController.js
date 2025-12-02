@@ -478,4 +478,214 @@ export const markTokenWrong = async (req, res) => {
     }
 };
 
+/**
+ * Start serving an appointment
+ * Sets appointment status to SERVING, updates slot currentToken and servingAppointmentId
+ * Emits queue_update events and sends notifications
+ */
+export const startServing = async (req, res) => {
+    try {
+        const { appointmentId } = req.params;
+        const { startedAt } = req.body;
+        const { docId } = req.body; // From authDoctor middleware
+
+        if (!appointmentId) {
+            return res.json({ success: false, message: "Appointment ID required" });
+        }
+
+        // Get appointment
+        const appointment = await appointmentModel.findById(appointmentId);
+        if (!appointment) {
+            return res.json({ success: false, message: "Appointment not found" });
+        }
+
+        // Verify doctor owns this appointment's slot
+        if (appointment.docId !== docId) {
+            return res.json({ success: false, message: "Unauthorized: This appointment does not belong to you" });
+        }
+
+        if (!appointment.slotId) {
+            return res.json({ success: false, message: "This appointment is not slot-based" });
+        }
+
+        // Get slot
+        const slot = await availabilitySlotModel.findById(appointment.slotId);
+        if (!slot) {
+            return res.json({ success: false, message: "Slot not found" });
+        }
+
+        // Check if another appointment is currently being served
+        if (slot.servingAppointmentId && slot.servingAppointmentId !== appointmentId) {
+            const servingAppt = await appointmentModel.findById(slot.servingAppointmentId);
+            if (servingAppt && servingAppt.status === 'SERVING') {
+                return res.json({ 
+                    success: false, 
+                    message: `Another appointment (token #${servingAppt.slotTokenIndex}) is currently being served. Please complete it first.` 
+                });
+            }
+        }
+
+        // Verify this is the next token to serve
+        const expectedToken = slot.currentToken + 1;
+        if (appointment.slotTokenIndex !== expectedToken) {
+            return res.json({ 
+                success: false, 
+                message: `Token mismatch. Expected token #${expectedToken}, but appointment token is #${appointment.slotTokenIndex}` 
+            });
+        }
+
+        // Set serving state
+        const servingStartTime = startedAt ? new Date(startedAt).getTime() : Date.now();
+        appointment.status = 'SERVING';
+        appointment.servingStartedAt = servingStartTime;
+        await appointment.save();
+
+        // Update slot: set currentToken and servingAppointmentId
+        slot.currentToken = appointment.slotTokenIndex;
+        slot.servingAppointmentId = appointmentId;
+        slot.updatedAt = Date.now();
+        await slot.save();
+
+        // Get all appointments in this slot for queue update
+        const allAppointments = await appointmentModel.find({
+            slotId: appointment.slotId.toString(),
+            status: { $ne: 'CANCELLED' }
+        }).sort({ slotTokenIndex: 1 });
+
+        // Build position map for all affected appointments
+        const positionInQueueMap = {};
+        const affectedAppointmentIds = [];
+        
+        for (const apt of allAppointments) {
+            const position = Math.max(0, apt.slotTokenIndex - slot.currentToken);
+            positionInQueueMap[apt._id.toString()] = position;
+            affectedAppointmentIds.push(apt._id.toString());
+        }
+
+        // Emit queue_update events
+        const { emitQueueUpdate } = await import('../socket.js');
+        const { createNotification } = await import('../controllers/notificationController.js');
+        const lastUpdatedAt = new Date().toISOString();
+
+        // Emit to all affected appointments
+        for (const apt of allAppointments) {
+            const position = positionInQueueMap[apt._id.toString()];
+            const estimatedWait = position * slot.averageConsultationTime;
+
+            emitQueueUpdate(
+                apt._id.toString(),
+                slot._id.toString(),
+                {
+                    currentToken: slot.currentToken,
+                    servingAppointmentId: appointmentId,
+                    yourTokenNumber: apt.slotTokenIndex,
+                    positionInQueue: position,
+                    estimatedWaitMin: Math.round(estimatedWait),
+                    averageServiceTimePerPatient: slot.averageConsultationTime,
+                    lastUpdatedAt,
+                    positionInQueueMap
+                },
+                affectedAppointmentIds
+            );
+
+            // Send notifications to waiting patients
+            if (apt.status === 'BOOKED' || apt.status === 'WAITING') {
+                const notifyWhen = apt.notificationSubscription?.notifyWhenTokensAway || 2;
+                
+                if (apt.notificationSubscription?.subscribed) {
+                    if (position === 0) {
+                        // Their turn
+                        await createNotification(
+                            apt.userId,
+                            'now_serving',
+                            'Your Turn!',
+                            `Your token #${apt.slotTokenIndex} is now being served. Please proceed to the counter.`,
+                            apt._id.toString()
+                        );
+                    } else if (position <= notifyWhen) {
+                        // Almost their turn
+                        await createNotification(
+                            apt.userId,
+                            'your_turn_soon',
+                            'Almost Your Turn',
+                            `Your token #${apt.slotTokenIndex} is ${position} ${position === 1 ? 'token' : 'tokens'} away. Estimated wait: ${Math.round(estimatedWait)} minutes.`,
+                            apt._id.toString()
+                        );
+                    } else {
+                        // General position update
+                        await createNotification(
+                            apt.userId,
+                            'position_update',
+                            'Queue Update',
+                            `Doctor has started serving token #${slot.currentToken}. Your position: ${position}. Estimated wait: ${Math.round(estimatedWait)} min.`,
+                            apt._id.toString()
+                        );
+                    }
+                }
+            }
+        }
+
+        // Telemetry
+        console.log(`[TELEMETRY] doctor_start_serving: { appointmentId: ${appointmentId}, doctorId: ${docId}, startedAt: ${servingStartTime} }`);
+
+        res.json({
+            success: true,
+            message: "Started serving appointment",
+            appointment: {
+                _id: appointment._id.toString(),
+                slotTokenIndex: appointment.slotTokenIndex,
+                status: appointment.status,
+                servingStartedAt: appointment.servingStartedAt
+            },
+            queueState: {
+                currentToken: slot.currentToken,
+                servingAppointmentId: appointmentId,
+                averageServiceTimePerPatient: slot.averageConsultationTime,
+                lastUpdatedAt
+            }
+        });
+    } catch (error) {
+        console.error('Error starting serving:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Get queue state for a slot
+ */
+export const getQueueState = async (req, res) => {
+    try {
+        const { slotId } = req.params;
+
+        const slot = await availabilitySlotModel.findById(slotId);
+        if (!slot) {
+            return res.json({ success: false, message: "Slot not found" });
+        }
+
+        // Get all appointments in this slot
+        const appointments = await appointmentModel.find({
+            slotId: slotId.toString(),
+            status: { $ne: 'CANCELLED' }
+        }).sort({ slotTokenIndex: 1 });
+
+        const waitingTokens = appointments
+            .filter(apt => apt.status === 'BOOKED' || apt.status === 'WAITING')
+            .map(apt => apt.slotTokenIndex);
+
+        res.json({
+            success: true,
+            queueState: {
+                queueId: slotId,
+                currentToken: slot.currentToken,
+                servingAppointmentId: slot.servingAppointmentId,
+                waitingTokens,
+                averageServiceTimePerPatient: slot.averageConsultationTime,
+                lastUpdatedAt: new Date(slot.updatedAt).toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Error getting queue state:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
 

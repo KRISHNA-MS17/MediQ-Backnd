@@ -148,11 +148,25 @@ const doctorDashboard = async (req, res) => {
 const doctorProfile = async (req, res) => {
   try {
     const { docId } = req.body;
-    const profileData = await doctorModel.findById(docId).select("-password");
+    
+    console.log('=== FETCHING DOCTOR PROFILE ===');
+    console.log('docId:', docId);
+    
+    // Explicitly select all fields including phone
+    const profileData = await doctorModel.findById(docId).select("-password").lean();
+
+    console.log('Profile data phone field:', profileData?.phone);
+    console.log('Profile data phone type:', typeof profileData?.phone);
+    console.log('Full profile data keys:', Object.keys(profileData || {}));
+    console.log('Full profile data:', JSON.stringify(profileData, null, 2));
+
+    if (!profileData) {
+      return res.json({ success: false, message: "Doctor not found" });
+    }
 
     res.json({ success: true, profileData });
   } catch (error) {
-    console.log(error);
+    console.error('Error fetching doctor profile:', error);
     res.json({ success: false, message: error.message });
   }
 };
@@ -162,15 +176,75 @@ const updateDoctorProfile = async (req, res) => {
   try {
     const { docId, fees, address, available, phone, about } = req.body;
 
-    const updateData = { fees, address, available };
-    if (phone !== undefined) updateData.phone = phone;
-    if (about !== undefined) updateData.about = about;
+    console.log('=== UPDATE PROFILE REQUEST ===');
+    console.log('docId:', docId);
+    console.log('Request body:', { fees, address, available, phone, about });
+    console.log('Phone value:', phone, 'Type:', typeof phone);
 
-    await doctorModel.findByIdAndUpdate(docId, updateData);
+    // First, get the current doctor to verify it exists
+    const currentDoctor = await doctorModel.findById(docId);
+    if (!currentDoctor) {
+      return res.json({ success: false, message: "Doctor not found" });
+    }
 
-    res.json({ success: true, message: "Profile Updated" });
+    console.log('Current doctor phone BEFORE update:', currentDoctor.phone);
+
+    // Build update object - explicitly set each field
+    const updateFields = {};
+    
+    if (fees !== undefined) {
+      updateFields.fees = fees;
+    }
+    if (address !== undefined) {
+      updateFields.address = address;
+    }
+    if (available !== undefined) {
+      updateFields.available = available;
+    }
+    // CRITICAL: Always set phone if it's provided in the request
+    // Check for both undefined and null, but allow empty string (frontend validates it's not empty)
+    if (phone !== undefined && phone !== null) {
+      const phoneValue = String(phone).trim();
+      updateFields.phone = phoneValue;
+      console.log('Setting phone to:', phoneValue, 'Length:', phoneValue.length);
+    } else {
+      console.log('WARNING: Phone is undefined or null in request!');
+    }
+    if (about !== undefined) {
+      updateFields.about = about;
+    }
+
+    console.log('Update fields:', updateFields);
+
+    // Use findByIdAndUpdate with $set to ensure proper update
+    const updatedDoctor = await doctorModel.findByIdAndUpdate(
+      docId,
+      { $set: updateFields },
+      { 
+        new: true, 
+        runValidators: true,
+        upsert: false 
+      }
+    ).select("-password");
+
+    if (!updatedDoctor) {
+      return res.json({ success: false, message: "Failed to update doctor" });
+    }
+
+    console.log('Updated doctor phone AFTER update:', updatedDoctor.phone);
+    console.log('Updated doctor object:', JSON.stringify(updatedDoctor.toObject(), null, 2));
+
+    // Verify the phone was actually saved
+    const verifyDoctor = await doctorModel.findById(docId).select("phone");
+    console.log('Verification - phone in DB:', verifyDoctor?.phone);
+
+    res.json({ 
+      success: true, 
+      message: "Profile Updated",
+      profileData: updatedDoctor 
+    });
   } catch (error) {
-    console.log(error);
+    console.error('ERROR updating doctor profile:', error);
     res.json({ success: false, message: error.message });
   }
 };
