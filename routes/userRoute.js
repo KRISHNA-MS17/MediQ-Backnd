@@ -1,5 +1,6 @@
 import express from 'express'
 import { bookAppointment, cancelAppointment, getProfile, listAppointment, loginUser, paymentRazorpay, registerUser, updateProfile, verifyRazorpay, getPatientQueueStatus, updateTravelTime } from '../controllers/userController.js';
+import { getRazorpayCheckoutPage } from '../controllers/paymentController.js';
 import authUser from '../middlewares/authUser.js';
 import upload from '../middlewares/multer.js';
 
@@ -16,5 +17,7 @@ userRouter.post('/queue-status', authUser, getPatientQueueStatus)
 userRouter.post('/update-travel-time', authUser, updateTravelTime)
 userRouter.post('/payment-razorpay', authUser, paymentRazorpay)
 userRouter.post('/verifyRazorpay', authUser, verifyRazorpay)
+// Payment checkout page - must be before other routes to avoid conflicts
+userRouter.get('/payment-checkout', authUser, getRazorpayCheckoutPage)
 
 export default userRouter
