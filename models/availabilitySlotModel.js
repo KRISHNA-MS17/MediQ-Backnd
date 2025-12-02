@@ -25,8 +25,10 @@ const availabilitySlotSchema = new mongoose.Schema({
     // Queue management per slot
     totalTokens: { type: Number, default: 0 }, // Total tokens booked in this slot
     currentToken: { type: Number, default: 0 }, // Currently serving token (0 = not started)
+    servingAppointmentId: { type: String, default: null }, // Appointment currently being served
     averageConsultationTime: { type: Number, default: 10 }, // Dynamic average in minutes
     consultationsCount: { type: Number, default: 0 }, // Number of completed consultations for EMA
+    totalServiceSeconds: { type: Number, default: 0 }, // Total service time in seconds (for rolling average)
     // Metadata
     createdAt: { type: Number, default: Date.now },
     updatedAt: { type: Number, default: Date.now },

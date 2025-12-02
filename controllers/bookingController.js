@@ -248,6 +248,14 @@ export const getAppointmentQueue = async (req, res) => {
         const averageServiceTimePerPatient = slot.averageConsultationTime || 8;
         const estimatedWaitMin = positionInQueue * averageServiceTimePerPatient;
 
+        // Get doctor info for phone number
+        const doctor = await doctorModel.findById(appointment.docId).select('name phone');
+        const doctorInfo = {
+            name: doctor?.name || appointment.docData?.name || 'Unknown Doctor',
+            phone: doctor?.phone || appointment.docData?.phone || '',
+            hospital: appointment.docData?.hospitalName || appointment.docData?.address?.line1 || 'Hospital'
+        };
+
         res.json({
             success: true,
             data: {
@@ -256,6 +264,7 @@ export const getAppointmentQueue = async (req, res) => {
                 positionInQueue,
                 estimatedWaitMin: Math.round(estimatedWaitMin),
                 averageServiceTimePerPatient,
+                doctor: doctorInfo,
                 lastUpdatedAt: new Date().toISOString()
             }
         });

@@ -24,9 +24,13 @@ const appointmentSchema = new mongoose.Schema({
     actualConsultDuration: { type: Number, default: null }, // Actual duration in minutes (set when completed)
     status: {
         type: String,
-        enum: ['BOOKED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
+        enum: ['BOOKED', 'WAITING', 'SERVING', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'],
         default: 'BOOKED'
     },
+    // Serving state tracking
+    servingStartedAt: { type: Number, default: null }, // Timestamp when doctor started serving
+    servingEndedAt: { type: Number, default: null }, // Timestamp when service ended
+    serviceDurationSec: { type: Number, default: null }, // Service duration in seconds
     // Legacy fields (kept for backward compatibility)
     tokenNumber: { type: Number, default: null }, // Deprecated: use slotTokenIndex
     travelTime: { type: Number, default: null }, // Patient's travel time in minutes (auto-calculated)

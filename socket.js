@@ -146,11 +146,15 @@ export const emitQueueUpdate = (appointmentId, slotId, queueData, affectedAppoin
     const updateData = {
         type: 'queue_update',
         appointmentId,
+        queueId: slotId,
         currentToken: queueData.currentToken,
+        servingAppointmentId: queueData.servingAppointmentId || null,
         yourTokenNumber: queueData.yourTokenNumber,
         positionInQueue: queueData.positionInQueue,
         estimatedWaitMin: queueData.estimatedWaitMin,
+        averageServiceTimePerPatient: queueData.averageServiceTimePerPatient || null,
         lastUpdatedAt,
+        ...(queueData.positionInQueueMap && { positionInQueueMap: queueData.positionInQueueMap }),
         ...(affectedAppointmentIds && { affectedAppointmentIds })
     };
 

@@ -31,7 +31,9 @@ const doctorSchema = new mongoose.Schema({
         latitude: { type: Number, default: null },
         longitude: { type: Number, default: null },
         address: { type: String, default: '' }
-    }
+    },
+    // Contact Information
+    phone: { type: String, default: '' }
 }, { minimize: false })
 
 const doctorModel = mongoose.models.doctor || mongoose.model("doctor", doctorSchema);

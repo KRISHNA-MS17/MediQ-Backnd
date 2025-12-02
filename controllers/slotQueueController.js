@@ -40,31 +40,54 @@ export const markTokenCompleted = async (req, res) => {
             });
         }
 
-        // Calculate actual duration if not provided
+        // Calculate service duration
+        let serviceDurationSec = null;
         let finalActualDuration = actualDuration;
-        if (!finalActualDuration && appointment.estimatedStart) {
-            // Calculate from estimated start to now
+
+        if (appointment.servingStartedAt) {
+            // Calculate from serving start to now
+            const servingEndTime = Date.now();
+            serviceDurationSec = Math.round((servingEndTime - appointment.servingStartedAt) / 1000);
+            finalActualDuration = Math.round(serviceDurationSec / 60); // Convert to minutes
+        } else if (!finalActualDuration && appointment.estimatedStart) {
+            // Fallback: Calculate from estimated start to now
             finalActualDuration = Math.round((Date.now() - appointment.estimatedStart) / (1000 * 60));
+            serviceDurationSec = finalActualDuration * 60;
         }
+
         if (!finalActualDuration || finalActualDuration <= 0) {
             finalActualDuration = slot.averageConsultationTime; // Fallback to current average
+            serviceDurationSec = finalActualDuration * 60;
         }
 
-        // Update average consultation time using EMA (alpha = 0.2)
-        const alpha = 0.2;
-        const oldAvg = slot.averageConsultationTime;
-        const newAvg = alpha * finalActualDuration + (1 - alpha) * oldAvg;
+        // Update average consultation time using rolling average
+        // Method: (totalServiceSeconds / consultationsCount) / 60
+        slot.totalServiceSeconds = (slot.totalServiceSeconds || 0) + serviceDurationSec;
+        slot.consultationsCount = (slot.consultationsCount || 0) + 1;
+        const newAvg = (slot.totalServiceSeconds / slot.consultationsCount) / 60; // Convert to minutes
 
-        // Update slot: increment currentToken, update average, increment consultationsCount
+        // Also support EMA as fallback if consultationsCount is low
+        if (slot.consultationsCount < 3) {
+            const alpha = 0.2;
+            const oldAvg = slot.averageConsultationTime;
+            slot.averageConsultationTime = Math.round((alpha * finalActualDuration + (1 - alpha) * oldAvg) * 10) / 10;
+        } else {
+            slot.averageConsultationTime = Math.round(newAvg * 10) / 10; // Round to 1 decimal
+        }
+
+        // Update slot: increment currentToken, clear servingAppointmentId, update average
+        const previousToken = slot.currentToken;
         slot.currentToken = slot.currentToken + 1;
-        slot.averageConsultationTime = Math.round(newAvg * 10) / 10; // Round to 1 decimal
-        slot.consultationsCount = slot.consultationsCount + 1;
+        slot.servingAppointmentId = null; // Clear serving appointment
         slot.updatedAt = Date.now();
         await slot.save();
 
-        // Update appointment: mark as completed, record actual duration
+        // Update appointment: mark as completed, record service duration
+        const servingEndTime = Date.now();
         appointment.status = 'COMPLETED';
         appointment.actualConsultDuration = finalActualDuration;
+        appointment.servingEndedAt = servingEndTime;
+        appointment.serviceDurationSec = serviceDurationSec;
         appointment.isCompleted = true;
         await appointment.save();
 
@@ -168,9 +191,11 @@ export const markTokenCompleted = async (req, res) => {
                     slot._id.toString(), 
                     {
                         currentToken: slot.currentToken,
+                        servingAppointmentId: slot.servingAppointmentId,
                         yourTokenNumber: apt.slotTokenIndex,
                         positionInQueue: position,
                         estimatedWaitMin: Math.round(estimatedWait),
+                        averageServiceTimePerPatient: slot.averageConsultationTime,
                         lastUpdatedAt
                     },
                     affectedAppointmentIds
@@ -206,9 +231,16 @@ export const markTokenCompleted = async (req, res) => {
             }
         }
 
+        // Telemetry
+        console.log(`[TELEMETRY] doctor_completed: { appointmentId: ${appointmentId}, doctorId: ${appointment.docId}, durationSec: ${serviceDurationSec} }`);
+
         res.json({
             success: true,
             message: "Token marked as completed",
+            serviceDuration: {
+                seconds: serviceDurationSec,
+                minutes: finalActualDuration
+            },
             queueSnapshot
         });
     } catch (error) {
@@ -425,9 +457,12 @@ export const markTokenWrong = async (req, res) => {
                 
                 emitQueueUpdate(apt._id.toString(), slot._id.toString(), {
                     currentToken: slot.currentToken,
+                    servingAppointmentId: slot.servingAppointmentId,
                     yourTokenNumber: apt.slotTokenIndex,
                     positionInQueue: position,
-                    estimatedWaitMin: Math.round(estimatedWait)
+                    estimatedWaitMin: Math.round(estimatedWait),
+                    averageServiceTimePerPatient: slot.averageConsultationTime,
+                    lastUpdatedAt: new Date().toISOString()
                 });
             }
         }
