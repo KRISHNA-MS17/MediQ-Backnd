@@ -143,10 +143,67 @@ export const markTokenCompleted = async (req, res) => {
             tokens
         };
 
-        // Emit socket event
-        const { emitSlotUpdate } = await import('../socket.js');
+        // Emit socket events
+        const { emitSlotUpdate, emitQueueUpdate } = await import('../socket.js');
         if (emitSlotUpdate) {
             emitSlotUpdate(slot._id.toString(), queueSnapshot);
+        }
+
+        // Emit queue_update for all appointments in this slot and create notifications
+        if (emitQueueUpdate) {
+            const { createNotification } = await import('../controllers/notificationController.js');
+            
+            // Collect all affected appointment IDs
+            const affectedAppointmentIds = allAppointments.map(apt => apt._id.toString());
+            const lastUpdatedAt = new Date().toISOString();
+            
+            // Emit queue_update for each affected appointment with full payload
+            for (const apt of allAppointments) {
+                const position = Math.max(0, apt.slotTokenIndex - slot.currentToken);
+                const estimatedWait = position * slot.averageConsultationTime;
+                
+                // Emit with full payload including affected appointments and timestamp
+                emitQueueUpdate(
+                    apt._id.toString(), 
+                    slot._id.toString(), 
+                    {
+                        currentToken: slot.currentToken,
+                        yourTokenNumber: apt.slotTokenIndex,
+                        positionInQueue: position,
+                        estimatedWaitMin: Math.round(estimatedWait),
+                        lastUpdatedAt
+                    },
+                    affectedAppointmentIds
+                );
+
+                // Get previous position for notification logic
+                const previousPosition = apt.slotTokenIndex - (slot.currentToken - 1);
+                const positionDecreased = position < previousPosition;
+
+                // Create notification for queue position update
+                if (position === 0 && positionDecreased) {
+                    // It's their turn
+                    await createNotification(
+                        apt.userId,
+                        'your_turn',
+                        'Your Turn!',
+                        `It's your turn now! Please proceed to the counter.`,
+                        apt._id.toString()
+                    );
+                } else if (position <= 2 && positionDecreased) {
+                    // Check if user is subscribed and should be notified
+                    const notifyWhen = apt.notificationSubscription?.notifyWhenTokensAway || 2;
+                    if (position <= notifyWhen && apt.notificationSubscription?.subscribed) {
+                        await createNotification(
+                            apt.userId,
+                            'queue_update',
+                            'Almost Your Turn',
+                            `Your position in queue is now ${position}. ${position === 1 ? 'You\'re next!' : `Estimated wait: ${Math.round(estimatedWait)} minutes`}`,
+                            apt._id.toString()
+                        );
+                    }
+                }
+            }
         }
 
         res.json({
@@ -354,10 +411,25 @@ export const markTokenWrong = async (req, res) => {
             tokens
         };
 
-        // Emit socket event
-        const { emitSlotUpdate } = await import('../socket.js');
+        // Emit socket events
+        const { emitSlotUpdate, emitQueueUpdate } = await import('../socket.js');
         if (emitSlotUpdate) {
             emitSlotUpdate(slot._id.toString(), queueSnapshot);
+        }
+
+        // Emit queue_update for all appointments in this slot
+        if (emitQueueUpdate) {
+            for (const apt of allAppointments) {
+                const position = Math.max(0, apt.slotTokenIndex - slot.currentToken);
+                const estimatedWait = position * slot.averageConsultationTime;
+                
+                emitQueueUpdate(apt._id.toString(), slot._id.toString(), {
+                    currentToken: slot.currentToken,
+                    yourTokenNumber: apt.slotTokenIndex,
+                    positionInQueue: position,
+                    estimatedWaitMin: Math.round(estimatedWait)
+                });
+            }
         }
 
         res.json({

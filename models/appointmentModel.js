@@ -35,6 +35,13 @@ const appointmentSchema = new mongoose.Schema({
         earlyWarning: { type: Boolean, default: false },
         approaching: { type: Boolean, default: false },
         yourTurn: { type: Boolean, default: false }
+    },
+    notificationSubscription: {
+        subscribed: { type: Boolean, default: false },
+        notifyWhenTokensAway: { type: Number, default: 2 },
+        deviceToken: { type: String, default: null },
+        subscribedAt: { type: Number, default: null },
+        unsubscribedAt: { type: Number, default: null }
     }
 })
 

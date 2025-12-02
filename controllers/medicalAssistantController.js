@@ -1,827 +1,813 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import doctorModel from '../models/doctorModel.js';
 
-// Initialize Gemini AI - get API key from environment
+// Initialize Gemini AI
 const geminiApiKey = (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, '');
 if (!geminiApiKey) {
-  console.warn('⚠️  GEMINI_API_KEY not found in environment variables. Medical Assistant will use rule-based mode only.');
+  console.warn('⚠️  GEMINI_API_KEY not found. Medical Assistant will use rule-based mode only.');
 }
 const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
 
 /**
+ * Symptom Normalization Dictionary
+ */
+const symptomNormalization = {
+  'stomac': 'stomach',
+  'stomachache': 'stomach pain',
+  'stomach ache': 'stomach pain',
+  'breth': 'breath',
+  'breathles': 'breathlessness',
+  'breathless': 'breathlessness',
+  'short of breath': 'breathlessness',
+  'runny nose': 'nasal discharge',
+  'stuffy nose': 'nasal congestion',
+  'sore throat': 'throat pain',
+  'body ache': 'body pain',
+  'muscle ache': 'muscle pain',
+  'joint ache': 'joint pain',
+};
+
+/**
+ * Red Flag Symptoms (Emergency Indicators)
+ */
+const redFlagSymptoms = {
+  'chest pain': { severity: 'severe', triage: 'emergency' },
+  'severe chest pain': { severity: 'severe', triage: 'emergency' },
+  'difficulty breathing': { severity: 'severe', triage: 'emergency' },
+  'severe breathing difficulty': { severity: 'severe', triage: 'emergency' },
+  'cannot breathe': { severity: 'severe', triage: 'emergency' },
+  'slurred speech': { severity: 'severe', triage: 'emergency' },
+  'weakness on one side': { severity: 'severe', triage: 'emergency' },
+  'left side weakness': { severity: 'severe', triage: 'emergency' },
+  'right side weakness': { severity: 'severe', triage: 'emergency' },
+  'facial drooping': { severity: 'severe', triage: 'emergency' },
+  'loss of consciousness': { severity: 'severe', triage: 'emergency' },
+  'unconscious': { severity: 'severe', triage: 'emergency' },
+  'severe bleeding': { severity: 'severe', triage: 'emergency' },
+  'major bleeding': { severity: 'severe', triage: 'emergency' },
+  'severe head injury': { severity: 'severe', triage: 'emergency' },
+  'neck stiffness': { severity: 'severe', triage: 'urgent' },
+  'severe abdominal pain': { severity: 'severe', triage: 'urgent' },
+  'severe headache': { severity: 'severe', triage: 'urgent' },
+  'high fever': { severity: 'moderate', triage: 'urgent' },
+};
+
+/**
  * Symptom to Specialization Mapping
- * Maps symptoms/keywords to recommended doctor specializations
  */
 const symptomToSpecialization = {
-  // Respiratory & General
-  fever: ['General Physician', 'Pulmonologist'],
-  cough: ['General Physician', 'Pulmonologist'],
-  cold: ['General Physician', 'Pulmonologist'],
-  flu: ['General Physician', 'Pulmonologist'],
-  'sore throat': ['General Physician', 'ENT Specialist'],
-  'throat pain': ['General Physician', 'ENT Specialist'],
-  'runny nose': ['General Physician', 'ENT Specialist'],
-  'nasal congestion': ['ENT Specialist', 'General Physician'],
-  'difficulty breathing': ['Pulmonologist', 'General Physician'],
-  'shortness of breath': ['Pulmonologist', 'Cardiologist'],
-  'chest congestion': ['Pulmonologist', 'General Physician'],
-  
   // Cardiac
-  'chest pain': ['Cardiologist', 'General Physician'],
-  'chest discomfort': ['Cardiologist', 'General Physician'],
-  'heart palpitations': ['Cardiologist'],
-  'irregular heartbeat': ['Cardiologist'],
-  'high blood pressure': ['Cardiologist', 'General Physician'],
-  'hypertension': ['Cardiologist', 'General Physician'],
-  'heart problem': ['Cardiologist'],
+  'chest pain': 'Cardiologist',
+  'chest discomfort': 'Cardiologist',
+  'heart palpitations': 'Cardiologist',
+  'irregular heartbeat': 'Cardiologist',
+  'shortness of breath': 'Cardiologist',
+  'breathlessness': 'Cardiologist',
+  
+  // Respiratory
+  'cough': 'Pulmonologist',
+  'fever': 'Pulmonologist',
+  'difficulty breathing': 'Pulmonologist',
+  'breathing difficulty': 'Pulmonologist',
+  'chest congestion': 'Pulmonologist',
   
   // Dermatology
-  'skin rash': ['Dermatologist'],
-  rash: ['Dermatologist'],
-  itching: ['Dermatologist'],
-  'skin irritation': ['Dermatologist'],
-  acne: ['Dermatologist'],
-  'skin infection': ['Dermatologist'],
-  eczema: ['Dermatologist'],
-  psoriasis: ['Dermatologist'],
-  'skin allergy': ['Dermatologist'],
-  hives: ['Dermatologist'],
-  'dry skin': ['Dermatologist'],
+  'rash': 'Dermatologist',
+  'skin rash': 'Dermatologist',
+  'itching': 'Dermatologist',
+  'skin irritation': 'Dermatologist',
+  'acne': 'Dermatologist',
+  'eczema': 'Dermatologist',
+  'psoriasis': 'Dermatologist',
   
   // Neurological
-  dizziness: ['Neurologist', 'General Physician'],
-  numbness: ['Neurologist'],
-  'tingling sensation': ['Neurologist'],
-  'severe headache': ['Neurologist', 'General Physician'],
-  migraine: ['Neurologist'],
-  seizures: ['Neurologist'],
-  'memory problems': ['Neurologist'],
-  'vision problems': ['Neurologist', 'Ophthalmologist'],
-  'blurred vision': ['Ophthalmologist', 'Neurologist'],
-  'loss of balance': ['Neurologist'],
+  'headache': 'Neurologist',
+  'severe headache': 'Neurologist',
+  'migraine': 'Neurologist',
+  'dizziness': 'Neurologist',
+  'numbness': 'Neurologist',
+  'tingling': 'Neurologist',
+  'seizures': 'Neurologist',
+  'slurred speech': 'Neurologist',
+  'weakness': 'Neurologist',
+  'neck stiffness': 'Neurologist',
   
-  // ENT
-  'ear pain': ['ENT Specialist'],
-  'ear infection': ['ENT Specialist'],
-  'hearing loss': ['ENT Specialist'],
-  'ear discharge': ['ENT Specialist'],
-  sinus: ['ENT Specialist'],
-  sinusitis: ['ENT Specialist'],
-  'nasal bleeding': ['ENT Specialist', 'General Physician'],
-  'nosebleed': ['ENT Specialist', 'General Physician'],
-  
-  // Orthopedic & Musculoskeletal
-  'joint pain': ['Orthopedician', 'General Physician'],
-  'bone pain': ['Orthopedician'],
-  fracture: ['Orthopedician'],
-  'back pain': ['Orthopedician', 'General Physician'],
-  'neck pain': ['Orthopedician', 'General Physician'],
-  'muscle pain': ['Orthopedician', 'General Physician'],
-  arthritis: ['Orthopedician', 'Rheumatologist'],
-  'knee pain': ['Orthopedician'],
-  'shoulder pain': ['Orthopedician'],
-  'ankle pain': ['Orthopedician'],
-  'wrist pain': ['Orthopedician'],
-  sprain: ['Orthopedician'],
-  'muscle strain': ['Orthopedician'],
+  // Orthopedic
+  'joint pain': 'Orthopedician',
+  'bone pain': 'Orthopedician',
+  'back pain': 'Orthopedician',
+  'neck pain': 'Orthopedician',
+  'knee pain': 'Orthopedician',
+  'ankle pain': 'Orthopedician',
+  'swelling': 'Orthopedician',
+  'injury': 'Orthopedician',
+  'fracture': 'Orthopedician',
+  'sprain': 'Orthopedician',
+  'twisted ankle': 'Orthopedician',
+  'cannot walk': 'Orthopedician',
   
   // Gastrointestinal
-  'stomach pain': ['Gastroenterologist', 'General Physician'],
-  'abdominal pain': ['Gastroenterologist', 'General Physician'],
-  nausea: ['Gastroenterologist', 'General Physician'],
-  vomiting: ['Gastroenterologist', 'General Physician'],
-  diarrhea: ['Gastroenterologist', 'General Physician'],
-  constipation: ['Gastroenterologist', 'General Physician'],
-  'stomach ache': ['Gastroenterologist', 'General Physician'],
-  'acid reflux': ['Gastroenterologist'],
-  'heartburn': ['Gastroenterologist'],
-  'indigestion': ['Gastroenterologist', 'General Physician'],
-  'stomach upset': ['Gastroenterologist', 'General Physician'],
+  'stomach pain': 'Gastroenterologist',
+  'abdominal pain': 'Gastroenterologist',
+  'nausea': 'Gastroenterologist',
+  'vomiting': 'Gastroenterologist',
+  'diarrhea': 'Gastroenterologist',
+  'constipation': 'Gastroenterologist',
+  'indigestion': 'Gastroenterologist',
   
-  // Pediatric
-  'child fever': ['Pediatrician'],
-  'child vomiting': ['Pediatrician'],
-  'child illness': ['Pediatrician'],
-  'infant health': ['Pediatrician'],
-  'baby health': ['Pediatrician'],
-  'child cough': ['Pediatrician'],
-  'child cold': ['Pediatrician'],
+  // ENT
+  'ear pain': 'ENT Specialist',
+  'throat pain': 'ENT Specialist',
+  'sore throat': 'ENT Specialist',
+  'nasal congestion': 'ENT Specialist',
+  'sinus': 'ENT Specialist',
+  'hearing loss': 'ENT Specialist',
   
-  // Gynecological
-  'women\'s health': ['Gynecologist'],
-  'menstrual problems': ['Gynecologist'],
-  'period pain': ['Gynecologist'],
-  pregnancy: ['Gynecologist'],
-  'gynecological': ['Gynecologist'],
-  'pelvic pain': ['Gynecologist'],
-  'vaginal discharge': ['Gynecologist'],
-  'urinary problems': ['Gynecologist', 'Urologist'],
-  
-  // Dental
-  'tooth pain': ['Dentist'],
-  toothache: ['Dentist'],
-  'bleeding gums': ['Dentist'],
-  'dental pain': ['Dentist'],
-  'gum problems': ['Dentist'],
-  'oral health': ['Dentist'],
-  'tooth infection': ['Dentist'],
-  'jaw pain': ['Dentist', 'Orthopedician'],
-  
-  // General symptoms
-  headache: ['General Physician'],
-  fatigue: ['General Physician'],
-  weakness: ['General Physician'],
-  'body ache': ['General Physician'],
-  'general illness': ['General Physician'],
-  'feeling unwell': ['General Physician'],
+  // General
+  'cold': 'General Physician',
+  'flu': 'General Physician',
+  'fever': 'General Physician',
+  'mild cold': 'General Physician',
 };
 
 /**
- * First Aid Guidance for Common Conditions
+ * Condition Candidates with Patterns
  */
-const firstAidGuidance = {
-  fever: {
-    advice: 'Drink plenty of water and fluids. Rest in a cool, well-ventilated room. Use a cold compress on your forehead. Monitor your temperature regularly. If fever persists above 102°F (38.9°C) or lasts more than 3 days, consult a doctor.',
-    steps: [
-      'Stay hydrated - drink water, ORS, or clear fluids',
-      'Rest and avoid strenuous activities',
-      'Apply a cool, damp cloth to forehead and neck',
-      'Take a lukewarm bath if comfortable',
-      'Monitor temperature every 4-6 hours',
-      'Seek medical care if fever is very high or persists'
-    ]
-  },
-  cough: {
-    advice: 'Stay hydrated with warm liquids like tea or soup. Use a humidifier or take steam inhalation. Avoid irritants like smoke. Rest and get plenty of sleep. If cough persists more than 2 weeks or is severe, consult a doctor.',
-    steps: [
-      'Drink warm liquids (tea, soup, warm water with honey)',
-      'Use a humidifier or take steam inhalation',
-      'Avoid smoking and secondhand smoke',
-      'Rest and get adequate sleep',
-      'Gargle with warm salt water if throat is irritated',
-      'Consult doctor if cough is severe or persistent'
-    ]
-  },
-  'chest pain': {
-    advice: 'Sit upright and stay calm. Avoid exertion. If chest pain is severe, persistent, or accompanied by shortness of breath, seek immediate medical attention. Do not ignore chest pain as it could indicate a serious condition.',
-    steps: [
-      'Sit upright in a comfortable position',
-      'Stay calm and avoid panic',
-      'Do not exert yourself',
-      'If pain is severe or persistent, call emergency services immediately',
-      'If you have heart disease risk factors, seek immediate care',
-      'Do not drive yourself to the hospital if pain is severe'
-    ]
-  },
-  'stomach pain': {
-    advice: 'Avoid solid foods for a few hours. Take small sips of water or clear fluids. Rest in a comfortable position. Avoid lying flat - try sitting up or lying on your side. If pain is severe, persistent, or accompanied by fever/vomiting, seek medical attention.',
-    steps: [
-      'Avoid solid foods initially',
-      'Take small sips of water or clear fluids',
-      'Rest in a comfortable position',
-      'Apply a warm compress to the abdomen if helpful',
-      'Avoid lying flat - sit up or lie on your side',
-      'Seek medical care if pain is severe or persistent'
-    ]
-  },
-  'skin rash': {
-    advice: 'Apply a cool, damp compress to the affected area. Avoid scratching to prevent infection. Keep the area clean and dry. Use mild, fragrance-free soap. If rash spreads, becomes painful, or shows signs of infection, consult a dermatologist.',
-    steps: [
-      'Apply a cool, damp cloth to the rash',
-      'Avoid scratching the affected area',
-      'Keep the area clean and dry',
-      'Use mild, fragrance-free soap',
-      'Wear loose, breathable clothing',
-      'Consult a doctor if rash worsens or spreads'
-    ]
-  },
-  headache: {
-    advice: 'Rest in a dark, quiet room. Drink water to stay hydrated. Apply a cold or warm compress to your forehead. Avoid screens and bright lights. If headache is severe, sudden, or accompanied by other symptoms, seek medical attention.',
-    steps: [
-      'Rest in a dark, quiet room',
-      'Drink water to stay hydrated',
-      'Apply a cold or warm compress to forehead',
-      'Avoid screens, bright lights, and loud noises',
-      'Try gentle neck and shoulder stretches',
-      'Seek medical care if headache is severe or unusual'
-    ]
-  },
-  'joint pain': {
-    advice: 'Rest the affected joint. Apply ice wrapped in a cloth for 15-20 minutes. Elevate the joint if possible. Avoid strenuous activities. If pain is severe, persistent, or the joint appears swollen/deformed, consult an orthopedic doctor.',
-    steps: [
-      'Rest the affected joint',
-      'Apply ice wrapped in a cloth for 15-20 minutes',
-      'Elevate the joint above heart level if possible',
-      'Avoid putting weight or strain on the joint',
-      'Use over-the-counter pain relief if appropriate',
-      'Consult a doctor if pain is severe or joint appears abnormal'
-    ]
-  },
-  'ear pain': {
-    advice: 'Apply a warm compress to the affected ear. Avoid inserting anything into the ear. Keep the ear dry. Rest and stay hydrated. If pain is severe, persistent, or accompanied by discharge or hearing loss, consult an ENT specialist.',
-    steps: [
-      'Apply a warm, dry compress to the affected ear',
-      'Do not insert anything into the ear canal',
-      'Keep the ear dry - avoid swimming or showering',
-      'Rest in an upright position to reduce pressure',
-      'Take over-the-counter pain relief if appropriate',
-      'Consult an ENT doctor if pain persists or worsens'
-    ]
-  },
-  'throat pain': {
-    advice: 'Gargle with warm salt water several times a day. Drink warm liquids like tea or soup. Rest your voice. Stay hydrated. Avoid irritants like smoke. If throat pain is severe, persistent, or accompanied by difficulty swallowing, consult a doctor.',
-    steps: [
-      'Gargle with warm salt water (1/2 tsp salt in 1 cup water)',
-      'Drink warm liquids (tea, soup, warm water with honey)',
-      'Rest your voice - avoid shouting or whispering',
-      'Stay hydrated with plenty of fluids',
-      'Avoid smoking and secondhand smoke',
-      'Consult a doctor if pain is severe or persists'
-    ]
-  },
-  'tooth pain': {
-    advice: 'Rinse your mouth with warm salt water. Apply a cold compress to the outside of your cheek near the painful area. Avoid very hot or cold foods. Use over-the-counter pain relief if appropriate. If pain is severe or persistent, consult a dentist as soon as possible.',
-    steps: [
-      'Rinse mouth with warm salt water',
-      'Apply a cold compress to the outside of your cheek',
-      'Avoid very hot, cold, or sweet foods',
-      'Use dental floss to remove any trapped food',
-      'Take over-the-counter pain relief if appropriate',
-      'Consult a dentist as soon as possible'
-    ]
-  },
-  vomiting: {
-    advice: 'Take small sips of water or ORS solution. Avoid solid foods for a few hours. Rest in an upright position. Stay hydrated. If vomiting persists, is severe, or contains blood, seek immediate medical attention.',
-    steps: [
-      'Take small, frequent sips of water or ORS',
-      'Avoid solid foods for 4-6 hours',
-      'Rest in an upright or semi-upright position',
-      'Avoid strong smells that might trigger nausea',
-      'Gradually reintroduce bland foods when ready',
-      'Seek medical care if vomiting is severe or persistent'
-    ]
-  },
-  dizziness: {
-    advice: 'Sit or lie down immediately to prevent falls. Drink water to stay hydrated. Avoid sudden movements. If dizziness is severe, persistent, or accompanied by other symptoms, seek medical attention.',
-    steps: [
-      'Sit or lie down immediately',
-      'Stay still until dizziness passes',
-      'Drink water to stay hydrated',
-      'Avoid sudden head movements',
-      'Get up slowly when feeling better',
-      'Consult a doctor if dizziness is frequent or severe'
-    ]
-  },
-  injury: {
-    advice: 'Stop any bleeding by applying direct pressure with a clean cloth. Clean the wound with water if possible. Apply a sterile bandage. Elevate the injured area if possible. If bleeding is severe, the wound is deep, or there are signs of infection, seek immediate medical care.',
-    steps: [
-      'Stop bleeding by applying direct pressure',
-      'Clean the wound gently with clean water',
-      'Apply a sterile bandage or dressing',
-      'Elevate the injured area above heart level',
-      'Keep the wound clean and dry',
-      'Seek medical care for severe injuries or signs of infection'
-    ]
-  },
-  'child fever': {
-    advice: 'Keep the child hydrated with water or ORS. Dress them in light, breathable clothing. Use a lukewarm sponge bath (not cold water). Monitor temperature regularly. If fever is very high (above 102°F), persists, or the child appears very unwell, consult a pediatrician immediately.',
-    steps: [
-      'Keep child hydrated with water or ORS solution',
-      'Dress in light, breathable clothing',
-      'Use lukewarm sponge bath (avoid cold water)',
-      'Monitor temperature every 2-4 hours',
-      'Ensure adequate rest and sleep',
-      'Consult pediatrician if fever is high or child is very unwell'
-    ]
-  }
-};
-
-/**
- * Serious symptoms that require immediate medical attention
- */
-const seriousSymptoms = [
-  'severe chest pain',
-  'difficulty breathing',
-  'unconsciousness',
-  'severe bleeding',
-  'severe burns',
-  'severe allergic reaction',
-  'stroke symptoms',
-  'heart attack',
-  'severe head injury',
-  'severe abdominal pain',
-  'severe dehydration',
-  'seizures',
-  'severe trauma',
-  'choking',
-  'severe difficulty swallowing',
-  'loss of consciousness',
-  'severe dizziness',
-  'severe headache',
-  'sudden vision loss',
-  'severe shortness of breath'
-];
-
-/**
- * Rule-based symptom analysis (fallback)
- */
-function analyzeSymptomsRuleBased(userInput) {
-  const lowerInput = userInput.toLowerCase().trim();
+function generateConditionCandidates(symptoms, normalizedInput) {
+  const candidates = [];
+  const lowerInput = normalizedInput.toLowerCase();
   
-  // Check for greetings
-  const greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'howdy', 'hola', 'namaste', 'thanks', 'thank you'];
-  const isGreeting = greetings.some(
-    (greeting) =>
-      lowerInput === greeting ||
-      lowerInput.startsWith(greeting + ' ') ||
-      lowerInput.endsWith(' ' + greeting) ||
-      lowerInput.includes(' ' + greeting + ' ')
-  );
-  
-  if (isGreeting || lowerInput.length < 10) {
-    return {
-      isGreeting: true,
-      isSerious: false,
-      firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
-      suggestedSpeciality: null,
-      explanation: null,
-      generalAdvice: null,
-      firstAidSteps: null
-    };
+  // Pattern 1: Fever + Headache + Neck Stiffness → Meningitis
+  if ((lowerInput.includes('fever') || lowerInput.includes('high temperature')) &&
+      (lowerInput.includes('headache') || lowerInput.includes('head pain')) &&
+      (lowerInput.includes('neck stiffness') || lowerInput.includes('stiff neck'))) {
+    candidates.push({
+      name: 'Meningitis / Serious Infection',
+      confidence: 0.85,
+      rationale: 'Fever with headache and neck stiffness suggests possible meningitis or serious infection requiring urgent evaluation.'
+    });
   }
   
-  // Check for serious symptoms first
-  const isSerious = seriousSymptoms.some((serious) => lowerInput.includes(serious));
-  
-  if (isSerious) {
-    return {
-      isGreeting: false,
-      isSerious: true,
-      firstAidGuidance: "⚠️ WARNING: These symptoms may indicate a serious medical emergency. Please seek immediate medical care or call emergency services (108/911) right away. Do not delay. If you're experiencing a life-threatening emergency, go to the nearest emergency room immediately.",
-      suggestedSpeciality: 'Emergency',
-      explanation: 'These symptoms require immediate medical attention. Please do not wait.',
-      generalAdvice: 'Seek emergency medical care immediately. Do not drive yourself if symptoms are severe.',
-      firstAidSteps: [
-        'Call emergency services (108/911) immediately',
-        'Stay calm and follow operator instructions',
-        'Do not drive yourself if symptoms are severe',
-        'Have someone take you to the emergency room',
-        'Bring any relevant medical information',
-        'Do not delay seeking care'
-      ]
-    };
+  // Pattern 2: Chest Pain → Cardiac Issue
+  if (lowerInput.includes('chest pain') || lowerInput.includes('chest discomfort')) {
+    candidates.push({
+      name: 'Cardiac Condition / Angina',
+      confidence: 0.80,
+      rationale: 'Chest pain requires cardiac evaluation to rule out heart-related conditions.'
+    });
   }
   
-  // Find matching symptoms and determine specialization
-  const matchedSymptoms = [];
-  const matchedSpecializations = new Set();
-  
-  for (const [symptom, specializations] of Object.entries(symptomToSpecialization)) {
-    if (lowerInput.includes(symptom)) {
-      matchedSymptoms.push(symptom);
-      specializations.forEach(spec => matchedSpecializations.add(spec));
-    }
+  // Pattern 3: Fever + Cough → Respiratory Infection
+  if ((lowerInput.includes('fever') || lowerInput.includes('temperature')) &&
+      (lowerInput.includes('cough') || lowerInput.includes('coughing'))) {
+    candidates.push({
+      name: 'Respiratory Infection (Flu/URTI)',
+      confidence: 0.75,
+      rationale: 'Fever with cough suggests upper respiratory tract infection or influenza.'
+    });
   }
   
-  // Determine primary specialization (first match or General Physician)
-  let suggestedSpeciality = null;
-  if (matchedSpecializations.size > 0) {
-    // Prioritize: Cardiologist > Pulmonologist > other specialists > General Physician
-    const priority = ['Cardiologist', 'Pulmonologist', 'Neurologist', 'Orthopedician', 'Gastroenterologist', 
-                      'Dermatologist', 'ENT Specialist', 'Pediatrician', 'Gynecologist', 'Dentist', 'Ophthalmologist'];
-    
-    for (const spec of priority) {
-      if (matchedSpecializations.has(spec)) {
-        suggestedSpeciality = spec;
-        break;
-      }
-    }
-    
-    // If no priority match, take first from matched
-    if (!suggestedSpeciality) {
-      suggestedSpeciality = Array.from(matchedSpecializations)[0];
-    }
-  } else {
-    // No specific match - default to General Physician
-    suggestedSpeciality = 'General Physician';
+  // Pattern 4: Sudden Weakness + Speech Issues → Stroke
+  if ((lowerInput.includes('weakness') || lowerInput.includes('numbness')) &&
+      (lowerInput.includes('slurred speech') || lowerInput.includes('speech problem') ||
+       lowerInput.includes('facial drooping'))) {
+    candidates.push({
+      name: 'Stroke / TIA',
+      confidence: 0.90,
+      rationale: 'Sudden weakness with speech issues or facial drooping suggests possible stroke - requires immediate emergency care.'
+    });
   }
   
-  // Find first aid guidance
-  let firstAidData = null;
-  let matchedCondition = null;
-  
-  // Check for specific conditions first
-  for (const [condition, guidance] of Object.entries(firstAidGuidance)) {
-    if (lowerInput.includes(condition)) {
-      firstAidData = guidance;
-      matchedCondition = condition;
-      break;
-    }
+  // Pattern 5: Injury + Swelling + Cannot Walk → Orthopedic Injury
+  if ((lowerInput.includes('injury') || lowerInput.includes('twisted') || lowerInput.includes('sprain')) &&
+      (lowerInput.includes('swelling') || lowerInput.includes('swollen')) &&
+      (lowerInput.includes('cannot walk') || lowerInput.includes('unable to walk'))) {
+    candidates.push({
+      name: 'Orthopedic Injury / Fracture',
+      confidence: 0.85,
+      rationale: 'Injury with swelling and inability to walk suggests possible fracture or severe sprain requiring orthopedic evaluation.'
+    });
   }
   
-  // If no specific match, use generic guidance
-  if (!firstAidData) {
-    // Determine generic guidance based on primary symptom
-    if (matchedSymptoms.length > 0) {
-      const primarySymptom = matchedSymptoms[0];
-      firstAidData = {
-        advice: `Based on your symptoms, rest and stay hydrated. Monitor your condition closely. If symptoms persist, worsen, or you develop new symptoms, consult a ${suggestedSpeciality} for proper evaluation and treatment.`,
-        steps: [
-          'Rest and avoid strenuous activities',
-          'Stay hydrated with water and clear fluids',
-          'Monitor your symptoms closely',
-          'Avoid self-medication without doctor consultation',
-          'Seek medical care if symptoms persist or worsen',
-          `Consult a ${suggestedSpeciality} for proper diagnosis`
-        ]
-      };
-    } else {
-      firstAidData = {
-        advice: 'Rest, stay hydrated, and monitor your symptoms. If symptoms persist or worsen, consult a doctor for proper diagnosis and treatment.',
-        steps: [
-          'Rest and get adequate sleep',
-          'Stay hydrated with water and fluids',
-          'Monitor your symptoms',
-          'Avoid self-medication',
-          'Consult a doctor if symptoms persist',
-          'Seek immediate care if symptoms worsen'
-        ]
-      };
-    }
+  // Pattern 6: Stomach Pain + Vomiting → GI Issue
+  if ((lowerInput.includes('stomach pain') || lowerInput.includes('abdominal pain')) &&
+      (lowerInput.includes('vomiting') || lowerInput.includes('nausea'))) {
+    candidates.push({
+      name: 'Gastrointestinal Disorder',
+      confidence: 0.75,
+      rationale: 'Abdominal pain with vomiting suggests gastrointestinal issue requiring gastroenterology evaluation.'
+    });
   }
   
-  // Generate explanation
-  let explanation = `Based on your symptoms (${matchedSymptoms.length > 0 ? matchedSymptoms.slice(0, 3).join(', ') : 'general symptoms'}), I recommend consulting a ${suggestedSpeciality}.`;
-  if (matchedSymptoms.length > 0) {
-    explanation += ` Your symptoms suggest a condition that a ${suggestedSpeciality} is best equipped to diagnose and treat.`;
+  // Pattern 7: Rash / Itching → Dermatological
+  if (lowerInput.includes('rash') || lowerInput.includes('itching') || lowerInput.includes('skin irritation')) {
+    candidates.push({
+      name: 'Dermatological Condition',
+      confidence: 0.70,
+      rationale: 'Skin rash or itching suggests dermatological condition requiring specialist evaluation.'
+    });
   }
   
-  return {
-    isGreeting: false,
-    isSerious: false,
-    firstAidGuidance: firstAidData.advice,
-    suggestedSpeciality: suggestedSpeciality,
-    explanation: explanation,
-    generalAdvice: firstAidData.advice,
-    firstAidSteps: firstAidData.steps,
-    matchedSymptoms: matchedSymptoms.slice(0, 5) // Limit to top 5
-  };
+  // Pattern 8: Mild Cold + Sore Throat → URTI
+  if ((lowerInput.includes('cold') || lowerInput.includes('runny nose')) &&
+      (lowerInput.includes('sore throat') || lowerInput.includes('throat pain')) &&
+      !lowerInput.includes('fever')) {
+    candidates.push({
+      name: 'Upper Respiratory Tract Infection (URTI)',
+      confidence: 0.70,
+      rationale: 'Mild cold symptoms with sore throat and no fever suggests common URTI.'
+    });
+  }
+  
+  // Default: General Illness
+  if (candidates.length === 0) {
+    candidates.push({
+      name: 'General Medical Condition',
+      confidence: 0.50,
+      rationale: 'Symptoms require general medical evaluation for proper diagnosis.'
+    });
+  }
+  
+  // Sort by confidence
+  candidates.sort((a, b) => b.confidence - a.confidence);
+  
+  return candidates;
 }
 
 /**
- * Find doctors by specialization with fallback to General Physician
+ * Extract Patient Information
  */
-async function findRecommendedDoctors(suggestedSpeciality, allDoctors) {
-  if (!suggestedSpeciality) {
-    return [];
+function extractPatientInfo(input) {
+  const lowerInput = input.toLowerCase();
+  const info = {
+    age: null,
+    pregnancy: false,
+    allergies: [],
+    duration: null,
+    feverValue: null,
+  };
+  
+  // Extract age
+  const ageMatch = lowerInput.match(/(\d+)\s*(?:years?|yrs?|year old|years old)/);
+  if (ageMatch) {
+    info.age = parseInt(ageMatch[1]);
   }
   
-  const lowerSpeciality = suggestedSpeciality.toLowerCase();
+  // Check pregnancy
+  if (lowerInput.includes('pregnant') || lowerInput.includes('pregnancy')) {
+    info.pregnancy = true;
+  }
+  
+  // Extract duration
+  const durationMatch = lowerInput.match(/(\d+)\s*(?:days?|hours?|weeks?|months?)/);
+  if (durationMatch) {
+    info.duration = durationMatch[0];
+  }
+  
+  // Extract fever value
+  const feverMatch = lowerInput.match(/(?:fever|temperature)\s*(?:of|is)?\s*(\d+)\s*(?:degrees?|°|f|°f)/i);
+  if (feverMatch) {
+    info.feverValue = parseInt(feverMatch[1]);
+  }
+  
+  return info;
+}
+
+/**
+ * Normalize Input
+ */
+function normalizeInput(input) {
+  let normalized = input.toLowerCase().trim();
+  
+  // Apply normalization dictionary
+  for (const [key, value] of Object.entries(symptomNormalization)) {
+    normalized = normalized.replace(new RegExp(key, 'gi'), value);
+  }
+  
+  return normalized;
+}
+
+/**
+ * Generate Red Flags
+ */
+function generateRedFlags(normalizedInput) {
+  const redFlags = [];
+  const lowerInput = normalizedInput.toLowerCase();
+  
+  for (const [symptom, data] of Object.entries(redFlagSymptoms)) {
+    if (lowerInput.includes(symptom)) {
+      redFlags.push(`Presence of ${symptom} - requires immediate medical attention`);
+    }
+  }
+  
+  // Additional pattern-based red flags
+  if (lowerInput.includes('fever') && lowerInput.includes('neck stiffness')) {
+    redFlags.push('Fever with neck stiffness may indicate meningitis - seek urgent care');
+  }
+  
+  if (lowerInput.includes('chest pain') && (lowerInput.includes('left') || lowerInput.includes('radiating'))) {
+    redFlags.push('Chest pain, especially if radiating, requires immediate cardiac evaluation');
+  }
+  
+  if (lowerInput.includes('weakness') && lowerInput.includes('speech')) {
+    redFlags.push('Sudden weakness with speech changes may indicate stroke - call emergency immediately');
+  }
+  
+  return redFlags;
+}
+
+/**
+ * Determine Triage Level
+ */
+function determineTriage(normalizedInput, redFlags, conditionCandidates) {
+  const lowerInput = normalizedInput.toLowerCase();
+  
+  // Emergency indicators
+  if (redFlags.length > 0) {
+    const emergencyKeywords = ['chest pain', 'cannot breathe', 'unconscious', 'severe bleeding', 'slurred speech', 'weakness on one side'];
+    if (emergencyKeywords.some(keyword => lowerInput.includes(keyword))) {
+      return 'emergency';
+    }
+  }
+  
+  // Urgent indicators
+  if (lowerInput.includes('severe') || lowerInput.includes('high fever') || 
+      lowerInput.includes('neck stiffness') || lowerInput.includes('severe pain')) {
+    return 'urgent';
+  }
+  
+  // See in 24h indicators
+  if (lowerInput.includes('fever') || lowerInput.includes('persistent') || 
+      lowerInput.includes('worsening') || conditionCandidates[0]?.confidence > 0.7) {
+    return 'see_in_24h';
+  }
+  
+  // Self-care
+  return 'self_care';
+}
+
+/**
+ * Generate Symptom-Specific Suggestions
+ */
+function generateSuggestions(normalizedInput, primaryCondition) {
+  const suggestions = [];
+  const lowerInput = normalizedInput.toLowerCase();
+  
+  // Fever-related
+  if (lowerInput.includes('fever') || lowerInput.includes('temperature')) {
+    suggestions.push('Stay hydrated - drink plenty of water, ORS, or clear fluids');
+    suggestions.push('Rest in a cool, well-ventilated room');
+    suggestions.push('Use a cool compress on forehead and neck');
+    suggestions.push('Monitor temperature every 4-6 hours');
+    suggestions.push('Seek medical care if fever is above 102°F (38.9°C) or persists more than 3 days');
+  }
+  
+  // Cough/Cold
+  if (lowerInput.includes('cough') || lowerInput.includes('cold') || lowerInput.includes('runny nose')) {
+    suggestions.push('Drink warm liquids (tea, soup, warm water with honey)');
+    suggestions.push('Use a humidifier or take steam inhalation');
+    suggestions.push('Avoid smoking and secondhand smoke');
+    suggestions.push('Gargle with warm salt water if throat is irritated');
+    suggestions.push('Rest and get adequate sleep');
+  }
+  
+  // Injury/Orthopedic
+  if (lowerInput.includes('injury') || lowerInput.includes('pain') && 
+      (lowerInput.includes('joint') || lowerInput.includes('ankle') || lowerInput.includes('knee'))) {
+    suggestions.push('Rest the affected area - avoid putting weight on it');
+    suggestions.push('Apply ice wrapped in a cloth for 15-20 minutes, 3-4 times daily');
+    suggestions.push('Elevate the injured area above heart level if possible');
+    suggestions.push('Use compression bandage if appropriate');
+    suggestions.push('Monitor for increased swelling, severe pain, or inability to move');
+  }
+  
+  // Stomach/GI
+  if (lowerInput.includes('stomach') || lowerInput.includes('abdominal') || 
+      lowerInput.includes('nausea') || lowerInput.includes('vomiting')) {
+    suggestions.push('Avoid solid foods initially - take small sips of water or clear fluids');
+    suggestions.push('Rest in a comfortable position - avoid lying flat');
+    suggestions.push('Gradually reintroduce bland foods (rice, toast, bananas) when ready');
+    suggestions.push('Avoid spicy, fatty, or acidic foods');
+    suggestions.push('Monitor for signs of dehydration (dry mouth, decreased urination)');
+  }
+  
+  // Headache
+  if (lowerInput.includes('headache') || lowerInput.includes('head pain')) {
+    suggestions.push('Rest in a dark, quiet room');
+    suggestions.push('Apply a cold or warm compress to forehead');
+    suggestions.push('Stay hydrated - drink water regularly');
+    suggestions.push('Avoid screens, bright lights, and loud noises');
+    suggestions.push('If headache is severe, sudden, or accompanied by other symptoms, seek immediate care');
+  }
+  
+  // Rash/Skin
+  if (lowerInput.includes('rash') || lowerInput.includes('itching') || lowerInput.includes('skin')) {
+    suggestions.push('Apply a cool, damp compress to the affected area');
+    suggestions.push('Avoid scratching to prevent infection');
+    suggestions.push('Keep the area clean and dry');
+    suggestions.push('Use mild, fragrance-free soap');
+    suggestions.push('Wear loose, breathable clothing');
+  }
+  
+  // Default suggestions
+  if (suggestions.length === 0) {
+    suggestions.push('Rest and get adequate sleep');
+    suggestions.push('Stay hydrated with water and clear fluids');
+    suggestions.push('Monitor your symptoms closely');
+    suggestions.push('Avoid strenuous activities');
+    suggestions.push('Seek medical care if symptoms persist or worsen');
+  }
+  
+  return suggestions.slice(0, 5); // Limit to 5 suggestions
+}
+
+/**
+ * Generate First-Aid Steps
+ */
+function generateFirstAid(normalizedInput, primaryCondition) {
+  const firstAid = [];
+  const lowerInput = normalizedInput.toLowerCase();
+  
+  // Emergency first-aid
+  if (lowerInput.includes('chest pain')) {
+    firstAid.push('Sit upright in a comfortable position');
+    firstAid.push('Stay calm and avoid exertion');
+    firstAid.push('If pain is severe or persistent, call emergency services immediately');
+    firstAid.push('Do not drive yourself if pain is severe');
+    return firstAid;
+  }
+  
+  // Injury first-aid (RICE)
+  if (lowerInput.includes('injury') || lowerInput.includes('twisted') || 
+      lowerInput.includes('sprain') || lowerInput.includes('swelling')) {
+    firstAid.push('Rest: Stop using the injured area immediately');
+    firstAid.push('Ice: Apply ice wrapped in cloth for 15-20 minutes');
+    firstAid.push('Compression: Use elastic bandage if available (not too tight)');
+    firstAid.push('Elevation: Raise the injured area above heart level');
+    firstAid.push('Seek medical care if unable to bear weight or if pain is severe');
+    return firstAid;
+  }
+  
+  // Fever first-aid
+  if (lowerInput.includes('fever') || lowerInput.includes('temperature')) {
+    firstAid.push('Stay hydrated - drink water, ORS, or clear fluids');
+    firstAid.push('Rest in a cool, well-ventilated room');
+    firstAid.push('Apply cool, damp cloth to forehead and neck');
+    firstAid.push('Take a lukewarm bath if comfortable (avoid cold water)');
+    firstAid.push('Monitor temperature every 4-6 hours');
+    firstAid.push('Seek medical care if fever is very high (above 102°F) or persists');
+    return firstAid;
+  }
+  
+  // GI first-aid
+  if (lowerInput.includes('vomiting') || lowerInput.includes('nausea') || 
+      lowerInput.includes('stomach pain')) {
+    firstAid.push('Take small, frequent sips of water or ORS solution');
+    firstAid.push('Avoid solid foods for 4-6 hours');
+    firstAid.push('Rest in an upright or semi-upright position');
+    firstAid.push('Avoid strong smells that might trigger nausea');
+    firstAid.push('Gradually reintroduce bland foods when ready');
+    firstAid.push('Seek medical care if vomiting is severe, persistent, or contains blood');
+    return firstAid;
+  }
+  
+  // Headache first-aid
+  if (lowerInput.includes('headache') || lowerInput.includes('head pain')) {
+    firstAid.push('Rest in a dark, quiet room');
+    firstAid.push('Apply a cold or warm compress to forehead');
+    firstAid.push('Stay hydrated - drink water');
+    firstAid.push('Avoid screens, bright lights, and loud noises');
+    firstAid.push('Try gentle neck and shoulder stretches if helpful');
+    firstAid.push('Seek immediate care if headache is severe, sudden, or unusual');
+    return firstAid;
+  }
+  
+  // Default first-aid
+  firstAid.push('Rest and avoid strenuous activities');
+  firstAid.push('Stay hydrated with water and clear fluids');
+  firstAid.push('Monitor symptoms closely');
+  firstAid.push('Avoid self-medication without doctor consultation');
+  firstAid.push('Seek medical care if symptoms persist or worsen');
+  
+  return firstAid;
+}
+
+/**
+ * Find Recommended Doctor
+ */
+async function findRecommendedDoctor(specialization, allDoctors) {
+  if (!allDoctors || allDoctors.length === 0) {
+    return null;
+  }
+  
+  const lowerSpecialization = specialization.toLowerCase();
   
   // Try exact match first
-  let matchedDoctors = allDoctors.filter((doc) => 
-    doc.speciality.toLowerCase() === lowerSpeciality
+  let matchedDoctors = allDoctors.filter(doc => 
+    doc.speciality && doc.speciality.toLowerCase() === lowerSpecialization
   );
   
   // Try partial match
   if (matchedDoctors.length === 0) {
-    matchedDoctors = allDoctors.filter((doc) => {
-      const docSpec = doc.speciality.toLowerCase();
-      return docSpec.includes(lowerSpeciality) || lowerSpeciality.includes(docSpec);
+    matchedDoctors = allDoctors.filter(doc => {
+      const docSpec = (doc.speciality || '').toLowerCase();
+      return docSpec.includes(lowerSpecialization) || lowerSpecialization.includes(docSpec);
     });
   }
   
-  // Fallback to General Physician if no specialist found
-  if (matchedDoctors.length === 0 && lowerSpeciality !== 'general physician') {
-    matchedDoctors = allDoctors.filter((doc) => {
-      const docSpec = doc.speciality.toLowerCase();
+  // Fallback to General Physician
+  if (matchedDoctors.length === 0 && lowerSpecialization !== 'general physician') {
+    matchedDoctors = allDoctors.filter(doc => {
+      const docSpec = (doc.speciality || '').toLowerCase();
       return docSpec.includes('general') || docSpec.includes('physician') || docSpec.includes('gp');
     });
   }
   
-  // If still no match, return first 3 available doctors
+  // If still no match, return first available
   if (matchedDoctors.length === 0) {
     matchedDoctors = allDoctors.slice(0, 3);
   }
   
-  // Limit to top 3
-  return matchedDoctors.slice(0, 3);
+  // Sort by availability (available first), then by rating/experience
+  matchedDoctors.sort((a, b) => {
+    // Available doctors first
+    if (a.available && !b.available) return -1;
+    if (!a.available && b.available) return 1;
+    // Then by experience (higher first)
+    return (b.experience || 0) - (a.experience || 0);
+  });
+  
+  // Return best match
+  const bestDoctor = matchedDoctors[0];
+  if (!bestDoctor) return null;
+  
+  return {
+    id: bestDoctor._id?.toString() || bestDoctor.id,
+    name: bestDoctor.name || 'Unknown Doctor',
+    specialization: bestDoctor.speciality || specialization,
+    availability: bestDoctor.available ? 'available' : 'unavailable',
+  };
 }
 
 /**
- * Use Gemini AI to analyze symptoms
+ * Determine Recommended Specialization
  */
-async function analyzeWithGemini(userInput, availableSpecialities) {
-  if (!genAI || !geminiApiKey) {
-    throw new Error('Gemini API not configured');
-  }
-
-  try {
-    // Get Gemini model - try gemini-1.5-pro first, fallback to gemini-pro
-    let model;
-    try {
-      model = genAI.getGenerativeModel({ model: 'gemini-1.5-pro' });
-    } catch (error) {
-      try {
-        model = genAI.getGenerativeModel({ model: 'gemini-pro' });
-      } catch (error2) {
-        // Try gemini-1.5-flash as another fallback
-        model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      }
+function determineSpecialization(normalizedInput, conditionCandidates) {
+  const lowerInput = normalizedInput.toLowerCase();
+  
+  // Check symptom patterns
+  for (const [symptom, specialization] of Object.entries(symptomToSpecialization)) {
+    if (lowerInput.includes(symptom)) {
+      return specialization;
     }
-
-    const prompt = `You are a helpful medical assistant. Analyze the user's symptoms and provide guidance.
-
-User message: "${userInput}"
-
-Available doctor specialities in our system: ${availableSpecialities.join(', ')}
-
-Analyze the symptoms and respond with a JSON object in this exact format:
-{
-  "isGreeting": false,
-  "isSerious": false,
-  "suggestedSpeciality": "One of the available specialities or 'General Physician'",
-  "explanation": "Brief explanation of why this speciality is recommended",
-  "generalAdvice": "General medical advice for the symptoms",
-  "firstAidGuidance": "Detailed first-aid guidance with steps"
+  }
+  
+  // Check condition candidates
+  if (conditionCandidates.length > 0) {
+    const primaryCondition = conditionCandidates[0].name.toLowerCase();
+    
+    if (primaryCondition.includes('cardiac') || primaryCondition.includes('chest')) {
+      return 'Cardiologist';
+    }
+    if (primaryCondition.includes('respiratory') || primaryCondition.includes('flu')) {
+      return 'Pulmonologist';
+    }
+    if (primaryCondition.includes('orthopedic') || primaryCondition.includes('fracture')) {
+      return 'Orthopedician';
+    }
+    if (primaryCondition.includes('gastrointestinal') || primaryCondition.includes('gi')) {
+      return 'Gastroenterologist';
+    }
+    if (primaryCondition.includes('stroke') || primaryCondition.includes('neurological')) {
+      return 'Neurologist';
+    }
+    if (primaryCondition.includes('dermatological') || primaryCondition.includes('skin')) {
+      return 'Dermatologist';
+    }
+  }
+  
+  return 'General Physician';
 }
 
-IMPORTANT RULES:
-- If the message is just a greeting (hi, hello, thanks, etc.) or very short (< 10 chars), set isGreeting: true and suggestedSpeciality: null
-- If symptoms indicate a serious emergency (severe chest pain, difficulty breathing, unconsciousness, etc.), set isSerious: true
-- Only suggest specialities from the available list: ${availableSpecialities.join(', ')}
-- If the suggested speciality is not in the list, use "General Physician"
-- Provide medically safe, helpful advice
-- Keep explanations clear and concise
-- Return ONLY valid JSON, no markdown, no additional text
+/**
+ * Validate with Gemini
+ */
+async function validateWithGemini(patientInput, outputJson) {
+  if (!genAI || !geminiApiKey) {
+    return { valid: true, score: 0.7, corrections: [] };
+  }
+  
+  try {
+    const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    
+    const prompt = `Evaluate this medical assistant output against the patient input.
 
-Respond with ONLY the JSON object:`;
+Patient Input: "${patientInput}"
+
+Assistant Output:
+${JSON.stringify(outputJson, null, 2)}
+
+Checklist:
+1. Are red-flags identified correctly?
+2. Is triage correct (emergency/urgent/see_in_24h/self_care)?
+3. Is specialization appropriate?
+4. Is the assigned doctor from available_doctors?
+5. No medication dosages or unsafe content?
+6. Suggestions and first-aid must be symptom-specific (not generic).
+
+Return ONLY a JSON object in this exact format:
+{
+  "valid": true/false,
+  "score": 0.0-1.0,
+  "corrections": ["correction 1", "correction 2"]
+}`;
 
     const result = await model.generateContent(prompt);
     const response = await result.response;
     const text = response.text();
-
-    // Parse JSON response (remove markdown code blocks if present)
-    let aiResponse;
-    try {
-      const cleanedText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
-      // Extract JSON from response if there's extra text
-      const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        aiResponse = JSON.parse(jsonMatch[0]);
-      } else {
-        aiResponse = JSON.parse(cleanedText);
-      }
-    } catch (parseError) {
-      console.error('Error parsing Gemini response:', parseError);
-      console.error('Raw response:', text);
-      throw new Error('Failed to parse AI response');
+    
+    // Parse JSON
+    const cleanedText = text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
+    const jsonMatch = cleanedText.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
     }
-
-    return aiResponse;
+    return JSON.parse(cleanedText);
   } catch (error) {
-    console.error('Gemini API error:', error);
-    throw error;
+    console.error('Gemini validation error:', error);
+    return { valid: true, score: 0.7, corrections: [] };
   }
 }
 
 /**
- * Analyze symptoms using Gemini AI with rule-based fallback
+ * Main Analyze Symptoms Function
  */
 export const analyzeSymptoms = async (req, res) => {
   try {
     const { symptoms } = req.body;
-
+    
     if (!symptoms || !symptoms.trim()) {
       return res.json({
         success: false,
         message: 'Please provide symptoms to analyze',
       });
     }
-
-    const userInput = symptoms.trim();
-    const lowerInput = userInput.toLowerCase();
     
-    // Check for greetings first (quick check)
-    const greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'howdy', 'hola', 'namaste', 'thanks', 'thank you'];
-    const isGreeting = greetings.some(
-      (greeting) =>
-        lowerInput === greeting ||
-        lowerInput.startsWith(greeting + ' ') ||
-        lowerInput.endsWith(' ' + greeting) ||
-        lowerInput.includes(' ' + greeting + ' ')
+    const patientInput = symptoms.trim();
+    
+    // Check for greetings
+    const greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'howdy', 'namaste'];
+    const lowerInput = patientInput.toLowerCase();
+    const isGreeting = greetings.some(greeting => 
+      lowerInput === greeting || 
+      lowerInput.startsWith(greeting + ' ') || 
+      lowerInput.endsWith(' ' + greeting)
     );
     
-    if (isGreeting || userInput.length < 10) {
+    if (isGreeting || patientInput.length < 10) {
       return res.json({
         success: true,
         data: {
           isGreeting: true,
-          isSerious: false,
-          firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
-          suggestedSpeciality: null,
-          explanation: null,
-          recommendedDoctors: [],
-          generalAdvice: null,
-          firstAidSteps: null
+          message: "Hello! I'm your medical assistant. Please describe your symptoms, and I'll provide first-aid guidance and suggest the right doctor for you.",
         },
       });
     }
-
-    // Get all available doctors from database
+    
+    // Get available doctors
     const doctors = await doctorModel
       .find({ available: true })
-      .select(['name', 'speciality', 'degree', 'experience', 'fees', 'about', 'image', '_id'])
+      .select(['name', 'speciality', 'degree', 'experience', 'fees', 'about', 'image', '_id', 'available'])
       .lean();
-
+    
     if (!doctors || doctors.length === 0) {
       return res.json({
         success: false,
         message: 'No doctors available in the database',
       });
     }
-
-    // Create a list of available specialities from database
-    const availableSpecialities = [...new Set(doctors.map((doc) => doc.speciality))];
-    // Always include General Physician as fallback
-    if (!availableSpecialities.some(s => s.toLowerCase().includes('general'))) {
-      availableSpecialities.push('General Physician');
-    }
-
-    let analysisResult;
-
-    // Try Gemini AI first if available
-    if (genAI && geminiApiKey) {
-      try {
-        console.log('Using Gemini AI for symptom analysis...');
-        const aiResponse = await analyzeWithGemini(userInput, availableSpecialities);
-        
-        // Validate and enhance AI response
-        if (aiResponse.isGreeting) {
-          return res.json({
-            success: true,
-            data: {
-              isGreeting: true,
-              isSerious: false,
-              firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
-              suggestedSpeciality: null,
-              explanation: null,
-              recommendedDoctors: [],
-              generalAdvice: null,
-              firstAidSteps: null
-            },
-          });
-        }
-
-        // Enhance AI response with rule-based first aid if available
-        let firstAidData = null;
-        for (const [condition, guidance] of Object.entries(firstAidGuidance)) {
-          if (lowerInput.includes(condition)) {
-            firstAidData = guidance;
-            break;
-          }
-        }
-
-        // Use AI's guidance or enhance with rule-based
-        const finalFirstAidGuidance = aiResponse.firstAidGuidance || aiResponse.generalAdvice || 
-          (firstAidData ? firstAidData.advice : 'Please consult a doctor for proper diagnosis and treatment.');
-        
-        const finalFirstAidSteps = firstAidData ? firstAidData.steps : 
-          (aiResponse.firstAidSteps || [
-            'Rest and stay hydrated',
-            'Monitor your symptoms',
-            'Avoid self-medication',
-            'Consult a doctor if symptoms persist',
-            `See a ${aiResponse.suggestedSpeciality || 'doctor'} for proper evaluation`
-          ]);
-
-        analysisResult = {
-          isGreeting: false,
-          isSerious: aiResponse.isSerious || false,
-          firstAidGuidance: finalFirstAidGuidance,
-          suggestedSpeciality: aiResponse.suggestedSpeciality || 'General Physician',
-          explanation: aiResponse.explanation || 'Based on your symptoms, a consultation is recommended.',
-          generalAdvice: aiResponse.generalAdvice || finalFirstAidGuidance,
-          firstAidSteps: finalFirstAidSteps
-        };
-
-        console.log('Gemini AI analysis successful');
-      } catch (aiError) {
-        console.error('Gemini AI error, falling back to rule-based:', aiError.message);
-        // Fall back to rule-based analysis
-        analysisResult = analyzeSymptomsRuleBased(userInput);
+    
+    // Normalize input
+    const normalizedInput = normalizeInput(patientInput);
+    
+    // Extract patient info
+    const patientInfo = extractPatientInfo(patientInput);
+    
+    // Generate patient summary
+    const patientSummary = `Patient reports: ${patientInput}. ${patientInfo.duration ? `Duration: ${patientInfo.duration}.` : ''} ${patientInfo.age ? `Age: ${patientInfo.age} years.` : ''} ${patientInfo.pregnancy ? 'Patient is pregnant.' : ''}`;
+    
+    // Generate condition candidates
+    const conditionCandidates = generateConditionCandidates(symptoms, normalizedInput);
+    
+    // Determine primary condition
+    const primaryCondition = {
+      name: conditionCandidates[0].name,
+      confidence: conditionCandidates[0].confidence,
+      severity: redFlagSymptoms[Object.keys(redFlagSymptoms).find(key => normalizedInput.includes(key))]?.severity || 'moderate',
+      triage: determineTriage(normalizedInput, [], conditionCandidates),
+    };
+    
+    // Generate red flags
+    const redFlags = generateRedFlags(normalizedInput);
+    
+    // Update triage based on red flags
+    if (redFlags.length > 0) {
+      const hasEmergency = redFlags.some(flag => 
+        flag.toLowerCase().includes('emergency') || 
+        flag.toLowerCase().includes('immediate')
+      );
+      if (hasEmergency) {
+        primaryCondition.triage = 'emergency';
+        primaryCondition.severity = 'severe';
+      } else if (primaryCondition.triage === 'self_care') {
+        primaryCondition.triage = 'urgent';
       }
+    }
+    
+    // Generate suggestions
+    const generalSuggestions = generateSuggestions(normalizedInput, primaryCondition);
+    
+    // Generate first-aid
+    const firstAid = generateFirstAid(normalizedInput, primaryCondition);
+    
+    // Determine specialization
+    const recommendedSpecialization = determineSpecialization(normalizedInput, conditionCandidates);
+    
+    // Find assigned doctor
+    const assignedDoctor = await findRecommendedDoctor(recommendedSpecialization, doctors);
+    
+    // Generate next steps
+    const nextStepsAndTests = [];
+    if (primaryCondition.triage === 'emergency') {
+      nextStepsAndTests.push('Go to nearest emergency room immediately');
+      nextStepsAndTests.push('Call emergency services if unable to transport');
+    } else if (primaryCondition.triage === 'urgent') {
+      nextStepsAndTests.push('See a doctor within 24 hours');
+      nextStepsAndTests.push('Monitor symptoms closely');
+    } else if (primaryCondition.triage === 'see_in_24h') {
+      nextStepsAndTests.push('Schedule appointment with recommended specialist');
+      nextStepsAndTests.push('Continue monitoring symptoms');
     } else {
-      // Use rule-based analysis if Gemini not available
-      console.log('Using rule-based analysis (Gemini not configured)');
-      analysisResult = analyzeSymptomsRuleBased(userInput);
-    }
-
-    // If it's serious, return immediately with emergency guidance
-    if (analysisResult.isSerious) {
-      const emergencyDoctors = await findRecommendedDoctors('General Physician', doctors);
-      return res.json({
-        success: true,
-        data: {
-          ...analysisResult,
-          recommendedDoctors: emergencyDoctors,
-        },
-      });
+      nextStepsAndTests.push('Follow self-care suggestions');
+      nextStepsAndTests.push('See doctor if symptoms persist or worsen');
     }
     
-    // Find recommended doctors based on suggested specialization
-    const recommendedDoctors = await findRecommendedDoctors(
-      analysisResult.suggestedSpeciality,
-      doctors
-    );
+    // Build output JSON
+    const outputJson = {
+      patient_summary: patientSummary,
+      condition_candidates: conditionCandidates,
+      primary_condition: primaryCondition,
+      red_flags: redFlags,
+      general_suggestions: generalSuggestions,
+      first_aid: firstAid,
+      recommended_specialization: recommendedSpecialization,
+      assigned_doctor: assignedDoctor,
+      next_steps_and_tests: nextStepsAndTests,
+      confidence_score: primaryCondition.confidence,
+      source_note: 'This is not a diagnosis; for emergencies seek hospital immediately',
+    };
     
-    // If no doctors found for suggested speciality, fallback to General Physician
-    if (recommendedDoctors.length === 0 && analysisResult.suggestedSpeciality !== 'General Physician') {
-      const generalDoctors = await findRecommendedDoctors('General Physician', doctors);
-      analysisResult.suggestedSpeciality = 'General Physician';
-      analysisResult.explanation = 'Specialist not available. Recommended: General Physician who can assess your condition and refer if needed.';
-      
-      return res.json({
-        success: true,
-        data: {
-          ...analysisResult,
-          recommendedDoctors: generalDoctors,
-        },
-      });
+    // Validate with Gemini
+    const validation = await validateWithGemini(patientInput, outputJson);
+    
+    // Apply corrections if needed
+    if (validation.corrections && validation.corrections.length > 0) {
+      console.log('Gemini validation corrections:', validation.corrections);
+      // Apply corrections (simplified - in production, parse and apply intelligently)
     }
     
-    // Return successful response
+    // Update confidence score
+    outputJson.confidence_score = (primaryCondition.confidence * 0.6) + (validation.score * 0.4);
+    
+    // Return response in expected format
     return res.json({
       success: true,
       data: {
         isGreeting: false,
-        isSerious: analysisResult.isSerious || false,
-        firstAidGuidance: analysisResult.firstAidGuidance,
-        suggestedSpeciality: analysisResult.suggestedSpeciality,
-        explanation: analysisResult.explanation,
-        recommendedDoctors: recommendedDoctors,
-        generalAdvice: analysisResult.generalAdvice,
-        firstAidSteps: analysisResult.firstAidSteps,
+        isSerious: primaryCondition.triage === 'emergency' || primaryCondition.triage === 'urgent',
+        firstAidGuidance: firstAid.join('\n'),
+        suggestedSpeciality: recommendedSpecialization,
+        explanation: `Based on your symptoms, I recommend consulting a ${recommendedSpecialization}. ${conditionCandidates[0].rationale}`,
+        recommendedDoctors: assignedDoctor ? [{
+          _id: assignedDoctor.id,
+          name: assignedDoctor.name,
+          speciality: assignedDoctor.specialization,
+          available: assignedDoctor.availability === 'available',
+        }] : [],
+        generalAdvice: generalSuggestions.join('\n'),
+        firstAidSteps: firstAid,
+        // Full structured response
+        structuredResponse: outputJson,
       },
     });
     
   } catch (error) {
     console.error('Error in analyzeSymptoms:', error);
-
-    // Fallback: Use rule-based analysis even on error
-    try {
-      const userInput = (req.body?.symptoms || '').trim();
-      const lowerInput = userInput.toLowerCase();
-      
-      const greetings = ['hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'greetings', 'howdy', 'hola', 'namaste'];
-      const isGreeting = greetings.some(
-        (greeting) =>
-          lowerInput === greeting ||
-          lowerInput.startsWith(greeting + ' ') ||
-          lowerInput.endsWith(' ' + greeting) ||
-          lowerInput.includes(' ' + greeting + ' ')
-      );
-
-      if (isGreeting || userInput.length < 10) {
-        return res.json({
-          success: true,
-          data: {
-            isGreeting: true,
-            isSerious: false,
-            firstAidGuidance: "Hello! I'm your medical assistant. I can help you with:\n\n• Analyzing your symptoms\n• Providing first-aid guidance\n• Suggesting the right doctor for your condition\n\nPlease describe your symptoms or health concern, and I'll help you find the best care.",
-            suggestedSpeciality: null,
-            explanation: null,
-            recommendedDoctors: [],
-          },
-        });
-      }
-
-      // Use rule-based fallback
-      const fallbackAnalysis = analyzeSymptomsRuleBased(userInput);
-      const doctors = await doctorModel
-        .find({ available: true })
-        .select(['name', 'speciality', 'degree', 'experience', 'fees', 'about', 'image', '_id'])
-        .limit(10)
-        .lean();
-      
-      const recommendedDoctors = await findRecommendedDoctors(
-        fallbackAnalysis.suggestedSpeciality || 'General Physician',
-        doctors
-      );
-
-      return res.json({
-        success: true,
-        data: {
-          ...fallbackAnalysis,
-          recommendedDoctors: recommendedDoctors,
-        },
-      });
-    } catch (fallbackError) {
-      console.error('Fallback error:', fallbackError);
-      return res.json({
-        success: false,
-        message: 'Unable to process symptoms. Please try again or contact support.',
-      });
-    }
+    
+    return res.json({
+      success: false,
+      message: 'Unable to process symptoms. Please try again or contact support.',
+      error: error.message,
+    });
   }
 };

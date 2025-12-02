@@ -98,6 +98,16 @@ export const bookSlotToken = async (req, res) => {
         const { scheduleNotifications } = await import('../services/notificationService.js');
         await scheduleNotifications(newAppointment._id.toString());
 
+        // Create notification for appointment booking
+        const { createNotification } = await import('../controllers/notificationController.js');
+        await createNotification(
+            userId,
+            'appointment_booked',
+            'Appointment Booked',
+            `You booked an appointment with ${docData.name} (${docData.speciality}). Token: #${assignedTokenIndex}. Estimated time: ${estimatedTimeFormatted}`,
+            newAppointment._id.toString()
+        );
+
         // Emit socket event for real-time update
         const { emitSlotUpdate } = await import('../socket.js');
         if (emitSlotUpdate) {
@@ -188,3 +198,160 @@ export const getUserAppointments = async (req, res) => {
     }
 };
 
+/**
+ * Get queue information for a specific appointment
+ */
+export const getAppointmentQueue = async (req, res) => {
+    try {
+        const { appointmentId } = req.params;
+        const { userId } = req.body; // From authUser middleware
+
+        const appointment = await appointmentModel.findById(appointmentId);
+        if (!appointment) {
+            return res.json({ success: false, message: "Appointment not found" });
+        }
+
+        // Verify appointment belongs to user
+        if (appointment.userId !== userId) {
+            return res.json({ success: false, message: "Unauthorized access" });
+        }
+
+        // Get slot information
+        let slot = null;
+        if (appointment.slotId) {
+            slot = await availabilitySlotModel.findById(appointment.slotId);
+        }
+
+        if (!slot) {
+            return res.json({ success: false, message: "Slot information not found" });
+        }
+
+        const yourTokenNumber = appointment.slotTokenIndex || appointment.tokenNumber;
+        const currentToken = slot.currentToken || 0;
+        const positionInQueue = Math.max(0, yourTokenNumber - currentToken);
+        const averageServiceTimePerPatient = slot.averageConsultationTime || 8;
+        const estimatedWaitMin = positionInQueue * averageServiceTimePerPatient;
+
+        res.json({
+            success: true,
+            data: {
+                currentToken,
+                yourTokenNumber,
+                positionInQueue,
+                estimatedWaitMin: Math.round(estimatedWaitMin),
+                averageServiceTimePerPatient,
+                lastUpdatedAt: new Date().toISOString()
+            }
+        });
+    } catch (error) {
+        console.error('Error getting appointment queue:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Cancel an appointment
+ */
+export const cancelAppointment = async (req, res) => {
+    try {
+        const { appointmentId } = req.params;
+        const { userId } = req.body; // From authUser middleware
+
+        const appointment = await appointmentModel.findById(appointmentId);
+        if (!appointment) {
+            return res.json({ success: false, message: "Appointment not found" });
+        }
+
+        // Verify appointment belongs to user
+        if (appointment.userId !== userId) {
+            return res.json({ success: false, message: "Unauthorized access" });
+        }
+
+        // Check if already cancelled
+        if (appointment.cancelled || appointment.status === 'CANCELLED') {
+            return res.json({ success: false, message: "Appointment already cancelled" });
+        }
+
+        // Check if already completed
+        if (appointment.isCompleted || appointment.status === 'COMPLETED') {
+            return res.json({ success: false, message: "Cannot cancel completed appointment" });
+        }
+
+        // Check cancellation window (2 hours before appointment)
+        const appointmentDate = new Date(appointment.slotDate || appointment.estimatedStart);
+        const now = new Date();
+        const hoursUntilAppointment = (appointmentDate - now) / (1000 * 60 * 60);
+
+        if (hoursUntilAppointment < 2) {
+            return res.json({ 
+                success: false, 
+                message: "Appointments cannot be cancelled within 2 hours of scheduled time" 
+            });
+        }
+
+        // Update appointment
+        await appointmentModel.findByIdAndUpdate(appointmentId, {
+            cancelled: true,
+            status: 'CANCELLED'
+        });
+
+        // Emit socket event for real-time update
+        const { emitSlotUpdate } = await import('../socket.js');
+        if (emitSlotUpdate && appointment.slotId) {
+            emitSlotUpdate(appointment.slotId.toString(), {
+                slotId: appointment.slotId.toString(),
+                cancelled: true
+            });
+        }
+
+        res.json({
+            success: true,
+            message: "Appointment cancelled successfully"
+        });
+    } catch (error) {
+        console.error('Error cancelling appointment:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Process payment for an appointment
+ */
+export const processPayment = async (req, res) => {
+    try {
+        const { appointmentId } = req.params;
+        const { userId } = req.body; // From authUser middleware
+        const { paymentId, paymentMethod } = req.body;
+
+        const appointment = await appointmentModel.findById(appointmentId);
+        if (!appointment) {
+            return res.json({ success: false, message: "Appointment not found" });
+        }
+
+        // Verify appointment belongs to user
+        if (appointment.userId !== userId) {
+            return res.json({ success: false, message: "Unauthorized access" });
+        }
+
+        // Check if already paid
+        if (appointment.payment || appointment.status === 'PAID') {
+            return res.json({ success: false, message: "Appointment already paid" });
+        }
+
+        // Update appointment payment status
+        await appointmentModel.findByIdAndUpdate(appointmentId, {
+            payment: true,
+            paymentId: paymentId || null,
+            paymentMethod: paymentMethod || 'online',
+            paymentDate: Date.now()
+        });
+
+        res.json({
+            success: true,
+            message: "Payment processed successfully"
+        });
+    } catch (error) {
+        console.error('Error processing payment:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
