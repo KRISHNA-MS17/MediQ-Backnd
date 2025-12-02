@@ -32,11 +32,19 @@ export const markTokenCompleted = async (req, res) => {
             return res.json({ success: false, message: "Slot not found" });
         }
 
-        // Verify this is the current token
-        if (appointment.slotTokenIndex !== slot.currentToken + 1) {
+        // Verify appointment is currently being served (status must be SERVING)
+        if (appointment.status !== 'SERVING') {
             return res.json({ 
                 success: false, 
-                message: `Token mismatch. Current token is ${slot.currentToken + 1}, but appointment token is ${appointment.slotTokenIndex}` 
+                message: `Appointment is not currently being served. Current status: ${appointment.status}. Only appointments with status 'SERVING' can be completed.` 
+            });
+        }
+
+        // Verify this is the current serving appointment
+        if (slot.servingAppointmentId !== appointmentId.toString()) {
+            return res.json({ 
+                success: false, 
+                message: `This appointment is not the current serving appointment. Current serving: ${slot.servingAppointmentId}` 
             });
         }
 
@@ -75,11 +83,33 @@ export const markTokenCompleted = async (req, res) => {
             slot.averageConsultationTime = Math.round(newAvg * 10) / 10; // Round to 1 decimal
         }
 
-        // Update slot: increment currentToken, clear servingAppointmentId, update average
+        // Update slot: increment currentToken, update average
         const previousToken = slot.currentToken;
-        slot.currentToken = slot.currentToken + 1;
-        slot.servingAppointmentId = null; // Clear serving appointment
-        slot.updatedAt = Date.now();
+        const completedAt = Date.now();
+        slot.updatedAt = completedAt;
+        
+        // Find next waiting appointment to auto-start
+        const nextWaitingAppointment = await appointmentModel.findOne({
+            slotId: appointment.slotId.toString(),
+            slotTokenIndex: { $gt: slot.currentToken },
+            status: { $in: ['BOOKED', 'WAITING'] }
+        }).sort({ slotTokenIndex: 1 });
+
+        if (nextWaitingAppointment) {
+            // Auto-start next appointment
+            slot.currentToken = nextWaitingAppointment.slotTokenIndex;
+            slot.servingAppointmentId = nextWaitingAppointment._id.toString();
+            
+            // Update next appointment to SERVING
+            nextWaitingAppointment.status = 'SERVING';
+            nextWaitingAppointment.servingStartedAt = completedAt; // Start immediately after previous completed
+            await nextWaitingAppointment.save();
+        } else {
+            // No more waiting appointments - increment token and clear serving
+            slot.currentToken = slot.currentToken + 1;
+            slot.servingAppointmentId = null;
+        }
+        
         await slot.save();
 
         // Update appointment: mark as completed, record service duration
@@ -180,12 +210,19 @@ export const markTokenCompleted = async (req, res) => {
             const affectedAppointmentIds = allAppointments.map(apt => apt._id.toString());
             const lastUpdatedAt = new Date().toISOString();
             
-            // Emit queue_update for each affected appointment with full payload
+            // Build positionInQueueMap for efficient client updates
+            const positionInQueueMap = {};
             for (const apt of allAppointments) {
                 const position = Math.max(0, apt.slotTokenIndex - slot.currentToken);
+                positionInQueueMap[apt._id.toString()] = position;
+            }
+            
+            // Emit queue_update for each affected appointment with full payload including positionInQueueMap
+            for (const apt of allAppointments) {
+                const position = positionInQueueMap[apt._id.toString()];
                 const estimatedWait = position * slot.averageConsultationTime;
                 
-                // Emit with full payload including affected appointments and timestamp
+                // Emit with full payload including affected appointments, timestamp, and positionInQueueMap
                 emitQueueUpdate(
                     apt._id.toString(), 
                     slot._id.toString(), 
@@ -196,7 +233,8 @@ export const markTokenCompleted = async (req, res) => {
                         positionInQueue: position,
                         estimatedWaitMin: Math.round(estimatedWait),
                         averageServiceTimePerPatient: slot.averageConsultationTime,
-                        lastUpdatedAt
+                        lastUpdatedAt,
+                        positionInQueueMap // Include map for all clients
                     },
                     affectedAppointmentIds
                 );
@@ -303,6 +341,8 @@ export const getSlotQueue = async (req, res) => {
                 endTime: slot.endTime,
                 currentToken: slot.currentToken,
                 totalTokens: slot.totalTokens,
+                servingSessionStarted: slot.servingSessionStarted || false,
+                servingAppointmentId: slot.servingAppointmentId,
                 averageConsultationTime: slot.averageConsultationTime,
                 tokens,
                 appointments: appointments.map(apt => ({
@@ -312,6 +352,7 @@ export const getSlotQueue = async (req, res) => {
                     userData: apt.userData,
                     estimatedStart: apt.estimatedStart,
                     actualConsultDuration: apt.actualConsultDuration,
+                    servingStartedAt: apt.servingStartedAt,
                     createdAt: apt.date
                 }))
             }
@@ -349,11 +390,11 @@ export const markTokenWrong = async (req, res) => {
             return res.json({ success: false, message: "Slot not found" });
         }
 
-        // Verify this is the current token
-        if (appointment.slotTokenIndex !== slot.currentToken + 1) {
+        // Verify appointment is currently being served (if it was)
+        if (appointment.status === 'SERVING' && slot.servingAppointmentId !== appointmentId.toString()) {
             return res.json({ 
                 success: false, 
-                message: `Token mismatch. Current token is ${slot.currentToken + 1}, but appointment token is ${appointment.slotTokenIndex}` 
+                message: `This appointment is not the current serving appointment. Current serving: ${slot.servingAppointmentId}` 
             });
         }
 
@@ -362,9 +403,34 @@ export const markTokenWrong = async (req, res) => {
         appointment.cancelled = true;
         await appointment.save();
 
-        // Move to next token without updating average time
-        slot.currentToken = slot.currentToken + 1;
-        slot.updatedAt = Date.now();
+        // If this was the serving appointment, auto-start next
+        const now = Date.now();
+        if (slot.servingAppointmentId === appointmentId.toString()) {
+            // Find next waiting appointment
+            const nextWaitingAppointment = await appointmentModel.findOne({
+                slotId: appointment.slotId.toString(),
+                slotTokenIndex: { $gt: slot.currentToken },
+                status: { $in: ['BOOKED', 'WAITING'] }
+            }).sort({ slotTokenIndex: 1 });
+
+            if (nextWaitingAppointment) {
+                // Auto-start next appointment
+                slot.currentToken = nextWaitingAppointment.slotTokenIndex;
+                slot.servingAppointmentId = nextWaitingAppointment._id.toString();
+                nextWaitingAppointment.status = 'SERVING';
+                nextWaitingAppointment.servingStartedAt = now;
+                await nextWaitingAppointment.save();
+            } else {
+                // No more waiting - increment token and clear serving
+                slot.currentToken = slot.currentToken + 1;
+                slot.servingAppointmentId = null;
+            }
+        } else {
+            // Not the serving appointment, just increment token
+            slot.currentToken = slot.currentToken + 1;
+        }
+        
+        slot.updatedAt = now;
         await slot.save();
 
         // Recalculate estimated start times for all remaining tokens
@@ -647,6 +713,131 @@ export const startServing = async (req, res) => {
     } catch (error) {
         console.error('Error starting serving:', error);
         res.json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Start serving session for a queue/slot (one-time operation)
+ * Sets servingSessionStarted = true and auto-starts the first waiting appointment
+ */
+export const startSession = async (req, res) => {
+    try {
+        const { slotId } = req.params;
+        const { doctorId, startedAt } = req.body;
+
+        if (!slotId) {
+            return res.status(400).json({ success: false, message: "Slot ID required" });
+        }
+
+        // Get slot with lock (using findOneAndUpdate for atomicity)
+        const slot = await availabilitySlotModel.findById(slotId);
+        if (!slot) {
+            return res.status(404).json({ success: false, message: "Slot not found" });
+        }
+
+        // Check if session already started
+        if (slot.servingSessionStarted) {
+            return res.status(409).json({ 
+                success: false, 
+                message: "Serving session already started for this queue" 
+            });
+        }
+
+        // Find the first waiting appointment (earliest by token index)
+        const firstWaitingAppointment = await appointmentModel.findOne({
+            slotId: slotId.toString(),
+            status: { $in: ['BOOKED', 'WAITING'] }
+        }).sort({ slotTokenIndex: 1 });
+
+        if (!firstWaitingAppointment) {
+            return res.status(400).json({ 
+                success: false, 
+                message: "No waiting appointments found to start serving" 
+            });
+        }
+
+        // Set session started and start serving first appointment
+        const now = startedAt ? new Date(startedAt).getTime() : Date.now();
+        slot.servingSessionStarted = true;
+        slot.currentToken = firstWaitingAppointment.slotTokenIndex;
+        slot.servingAppointmentId = firstWaitingAppointment._id.toString();
+        slot.updatedAt = Date.now();
+        await slot.save();
+
+        // Update first appointment to SERVING status
+        firstWaitingAppointment.status = 'SERVING';
+        firstWaitingAppointment.servingStartedAt = now;
+        if (doctorId) {
+            firstWaitingAppointment.servingStartedBy = doctorId;
+        }
+        await firstWaitingAppointment.save();
+
+        // Get all appointments for queue update
+        const allAppointments = await appointmentModel.find({
+            slotId: slotId.toString(),
+            status: { $ne: 'CANCELLED' }
+        }).sort({ slotTokenIndex: 1 });
+
+        // Build positionInQueueMap for efficient client updates
+        const positionInQueueMap = {};
+        for (const apt of allAppointments) {
+            const position = Math.max(0, apt.slotTokenIndex - slot.currentToken);
+            positionInQueueMap[apt._id.toString()] = position;
+        }
+
+        // Emit queue_update event
+        const { emitQueueUpdate } = await import('../socket.js');
+        if (emitQueueUpdate) {
+            const affectedAppointmentIds = allAppointments.map(apt => apt._id.toString());
+            const lastUpdatedAt = new Date().toISOString();
+
+            // Emit for each appointment with positionInQueueMap
+            for (const apt of allAppointments) {
+                const position = positionInQueueMap[apt._id.toString()];
+                const estimatedWait = position * slot.averageConsultationTime;
+
+                emitQueueUpdate(
+                    apt._id.toString(),
+                    slotId,
+                    {
+                        currentToken: slot.currentToken,
+                        servingAppointmentId: slot.servingAppointmentId,
+                        yourTokenNumber: apt.slotTokenIndex,
+                        positionInQueue: position,
+                        estimatedWaitMin: Math.round(estimatedWait),
+                        averageServiceTimePerPatient: slot.averageConsultationTime,
+                        lastUpdatedAt,
+                        positionInQueueMap // Include map for all clients
+                    },
+                    affectedAppointmentIds
+                );
+            }
+        }
+
+        // Telemetry
+        console.log(`[TELEMETRY] doctor_start_session: { slotId: ${slotId}, doctorId: ${doctorId}, firstToken: ${firstWaitingAppointment.slotTokenIndex} }`);
+
+        res.json({
+            success: true,
+            message: "Serving session started successfully",
+            queueState: {
+                slotId: slot._id.toString(),
+                servingSessionStarted: slot.servingSessionStarted,
+                currentToken: slot.currentToken,
+                servingAppointmentId: slot.servingAppointmentId,
+                averageServiceTimePerPatient: slot.averageConsultationTime
+            },
+            servingAppointment: {
+                _id: firstWaitingAppointment._id.toString(),
+                slotTokenIndex: firstWaitingAppointment.slotTokenIndex,
+                status: firstWaitingAppointment.status,
+                servingStartedAt: firstWaitingAppointment.servingStartedAt,
+                userData: firstWaitingAppointment.userData
+            }
+        });
+    } catch (error) {
+        console.error('Error starting session:', error);
+        res.status(500).json({ success: false, message: error.message || "Failed to start session" });
     }
 };
 
