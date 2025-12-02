@@ -91,6 +91,17 @@ export const bookSlotToken = async (req, res) => {
             estimatedWaitTime: Math.round((estimatedStart - Date.now()) / (1000 * 60))
         };
 
+        // Calculate estimated wait time: (tokenNumber - currentToken) × averageTime
+        const estimatedWaitTime = (assignedTokenIndex - slot.currentToken) * slot.averageConsultationTime;
+
+        // Format estimated time as HH:MM (e.g., "10:00", "10:30")
+        const estimatedTimeDate = new Date(estimatedStart);
+        const estimatedTimeFormatted = estimatedTimeDate.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: false 
+        });
+
         const newAppointment = new appointmentModel(appointmentData);
         await newAppointment.save();
 
@@ -121,17 +132,6 @@ export const bookSlotToken = async (req, res) => {
                 averageConsultationTime: slot.averageConsultationTime
             });
         }
-
-        // Calculate estimated wait time: (tokenNumber - currentToken) × averageTime
-        const estimatedWaitTime = (assignedTokenIndex - slot.currentToken) * slot.averageConsultationTime;
-
-        // Format estimated time as HH:MM (e.g., "10:00", "10:30")
-        const estimatedTimeDate = new Date(estimatedStart);
-        const estimatedTimeFormatted = estimatedTimeDate.toLocaleTimeString('en-US', { 
-            hour: '2-digit', 
-            minute: '2-digit',
-            hour12: false 
-        });
 
         res.json({
             success: true,

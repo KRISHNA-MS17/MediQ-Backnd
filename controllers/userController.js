@@ -125,35 +125,89 @@ const getProfile = async (req, res) => {
 // API to update user profile
 const updateProfile = async (req, res) => {
   try {
-    const { userId, name, phone, address, dob, gender } = req.body;
+    const { userId, name, phone, address, dob, gender, email } = req.body;
     const imageFile = req.file;
 
-    if (!name || !phone || !dob || !gender) {
-      return res.json({ success: false, message: "Data Missing" });
+    // Validation
+    if (!name || name.trim() === '') {
+      return res.json({ success: false, message: "Name is required" });
     }
 
-    await userModel.findByIdAndUpdate(userId, {
-      name,
-      phone,
-      address: JSON.parse(address),
-      dob,
-      gender,
-    });
+    if (!phone || phone.trim() === '') {
+      return res.json({ success: false, message: "Phone is required" });
+    }
 
+    // Validate phone format (basic)
+    const phoneRegex = /^[+]?[(]?[0-9]{1,4}[)]?[-\s.]?[(]?[0-9]{1,4}[)]?[-\s.]?[0-9]{1,9}$/;
+    if (!phoneRegex.test(phone.replace(/\s/g, ''))) {
+      return res.json({ success: false, message: "Please enter a valid phone number" });
+    }
+
+    // Validate email if provided
+    if (email && !validator.isEmail(email)) {
+      return res.json({ success: false, message: "Please enter a valid email" });
+    }
+
+    // Validate DOB if provided
+    if (dob) {
+      const dobDate = new Date(dob);
+      const today = new Date();
+      if (dobDate > today) {
+        return res.json({ success: false, message: "Date of birth cannot be in the future" });
+      }
+    }
+
+    // Prepare update data
+    const updateData = {
+      name: name.trim(),
+      phone: phone.trim(),
+    };
+
+    if (email) updateData.email = email.trim();
+    if (dob) updateData.dob = dob;
+    if (gender) updateData.gender = gender;
+
+    // Handle address (can be string JSON or object)
+    if (address) {
+      try {
+        updateData.address = typeof address === 'string' ? JSON.parse(address) : address;
+      } catch (e) {
+        // If parsing fails, treat as simple string
+        updateData.address = { line1: address, line2: '' };
+      }
+    }
+
+    // Update profile
+    await userModel.findByIdAndUpdate(userId, updateData);
+
+    // Handle image upload if provided
     if (imageFile) {
-      // upload image to cloudinary
-      const imageUpload = await cloudinary.uploader.upload(imageFile.path, {
-        resource_type: "image",
-      });
-      const imageURL = imageUpload.secure_url;
+      try {
+        // Upload image to cloudinary
+        const imageUpload = await cloudinary.uploader.upload(imageFile.path, {
+          resource_type: "image",
+          folder: "user-profiles",
+        });
+        const imageURL = imageUpload.secure_url;
 
-      await userModel.findByIdAndUpdate(userId, { image: imageURL });
+        await userModel.findByIdAndUpdate(userId, { image: imageURL });
+      } catch (uploadError) {
+        console.error('Image upload error:', uploadError);
+        // Continue even if image upload fails, but log it
+      }
     }
 
-    res.json({ success: true, message: "Profile Updated" });
+    // Fetch updated user data
+    const updatedUser = await userModel.findById(userId).select('-password');
+
+    res.json({ 
+      success: true, 
+      message: "Profile Updated",
+      userData: updatedUser
+    });
   } catch (error) {
-    console.log(error);
-    res.json({ success: false, message: error.message });
+    console.error('Update profile error:', error);
+    res.json({ success: false, message: error.message || "Failed to update profile" });
   }
 };
 
@@ -255,6 +309,79 @@ const listAppointment = async (req, res) => {
     res.json({ success: true, appointments });
   } catch (error) {
     console.log(error);
+    res.json({ success: false, message: error.message });
+  }
+};
+
+// API to get user appointment history (past appointments with pagination)
+const getAppointmentHistory = async (req, res) => {
+  try {
+    const { userId } = req.body;
+    const { page = 1, pageSize = 20, filter = 'past' } = req.query;
+    
+    const pageNum = parseInt(page);
+    const limit = parseInt(pageSize);
+    const skip = (pageNum - 1) * limit;
+
+    // Build query based on filter
+    const now = new Date();
+    const query = { userId };
+
+    if (filter === 'past') {
+      query.$or = [
+        { slotDate: { $lt: now.toISOString().split('T')[0] } },
+        { date: { $lt: now.getTime() } },
+        { status: 'COMPLETED' }
+      ];
+      query.status = { $ne: 'CANCELLED' };
+    } else if (filter === 'cancelled') {
+      query.status = 'CANCELLED';
+      query.cancelled = true;
+    }
+    // 'all' shows everything
+
+    const appointments = await appointmentModel
+      .find(query)
+      .sort({ date: -1, slotDate: -1 }) // Most recent first
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const total = await appointmentModel.countDocuments(query);
+
+    // Format appointments for response
+    const formattedAppointments = appointments.map(apt => ({
+      appointmentId: apt._id.toString(),
+      doctorName: apt.docData?.name || 'Unknown Doctor',
+      specialization: apt.docData?.speciality || 'General Physician',
+      tokenNumber: apt.slotTokenIndex ? `#${apt.slotTokenIndex}` : apt.tokenNumber ? `#${apt.tokenNumber}` : 'N/A',
+      time: apt.estimatedStart ? new Date(apt.estimatedStart).toISOString() : apt.date ? new Date(apt.date).toISOString() : null,
+      status: apt.status || (apt.cancelled ? 'cancelled' : apt.isCompleted ? 'completed' : 'booked'),
+      notes: apt.notes || null,
+      prescriptionUrl: apt.prescriptionUrl || null,
+      invoiceUrl: apt.invoiceUrl || null,
+      hospital: apt.docData?.address ? {
+        name: apt.docData?.address?.hospitalName || 'Hospital',
+        phone: apt.docData?.phone || '',
+        address: typeof apt.docData.address === 'object' 
+          ? `${apt.docData.address.line1 || ''}, ${apt.docData.address.line2 || ''}, ${apt.docData.address.city || ''}, ${apt.docData.address.state || ''}`.trim()
+          : apt.docData.address || ''
+      } : null,
+      slotDate: apt.slotDate,
+      slotTime: apt.slotTime,
+      amount: apt.amount,
+      payment: apt.payment
+    }));
+
+    res.json({
+      success: true,
+      items: formattedAppointments,
+      page: pageNum,
+      pageSize: limit,
+      total
+    });
+  } catch (error) {
+    console.error('Error getting appointment history:', error);
     res.json({ success: false, message: error.message });
   }
 };
@@ -451,6 +578,7 @@ export {
   updateProfile,
   bookAppointment,
   listAppointment,
+  getAppointmentHistory,
   cancelAppointment,
   getPatientQueueStatus,
   updateTravelTime,
