@@ -112,14 +112,31 @@ export const bookSlotToken = async (req, res) => {
             });
         }
 
+        // Calculate estimated wait time: (tokenNumber - currentToken) × averageTime
+        const estimatedWaitTime = (assignedTokenIndex - slot.currentToken) * slot.averageConsultationTime;
+
+        // Format estimated time as HH:MM (e.g., "10:00", "10:30")
+        const estimatedTimeDate = new Date(estimatedStart);
+        const estimatedTimeFormatted = estimatedTimeDate.toLocaleTimeString('en-US', { 
+            hour: '2-digit', 
+            minute: '2-digit',
+            hour12: false 
+        });
+
         res.json({
             success: true,
             message: "Token booked successfully",
             appointment: {
                 _id: newAppointment._id,
                 slotTokenIndex: assignedTokenIndex,
+                tokenNumber: assignedTokenIndex, // For backward compatibility
                 estimatedStart,
-                slotPeriod: slot.slotPeriod
+                estimatedTime: estimatedTimeFormatted, // Formatted time string (e.g., "10:00", "10:30")
+                estimatedWaitTime: Math.max(0, estimatedWaitTime), // Ensure non-negative
+                slotPeriod: slot.slotPeriod,
+                currentToken: slot.currentToken,
+                averageConsultationTime: slot.averageConsultationTime,
+                amount: docData.fees
             }
         });
     } catch (error) {

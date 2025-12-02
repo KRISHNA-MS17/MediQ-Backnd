@@ -200,7 +200,8 @@ export const getSlotQueue = async (req, res) => {
                 status,
                 estimatedStart,
                 appointmentId: appointment?._id?.toString() || null,
-                userId: appointment?.userId || null
+                userId: appointment?.userId || null,
+                userData: appointment?.userData || null
             });
         }
 
@@ -214,11 +215,158 @@ export const getSlotQueue = async (req, res) => {
                 currentToken: slot.currentToken,
                 totalTokens: slot.totalTokens,
                 averageConsultationTime: slot.averageConsultationTime,
-                tokens
+                tokens,
+                appointments: appointments.map(apt => ({
+                    _id: apt._id.toString(),
+                    slotTokenIndex: apt.slotTokenIndex,
+                    status: apt.status,
+                    userData: apt.userData,
+                    estimatedStart: apt.estimatedStart,
+                    actualConsultDuration: apt.actualConsultDuration,
+                    createdAt: apt.date
+                }))
             }
         });
     } catch (error) {
         console.error('Error getting slot queue:', error);
+        res.json({ success: false, message: error.message });
+    }
+};
+
+/**
+ * Mark token as wrong/skip - moves to next token without completing current
+ */
+export const markTokenWrong = async (req, res) => {
+    try {
+        const { appointmentId } = req.body;
+
+        if (!appointmentId) {
+            return res.json({ success: false, message: "Appointment ID required" });
+        }
+
+        // Get appointment
+        const appointment = await appointmentModel.findById(appointmentId);
+        if (!appointment) {
+            return res.json({ success: false, message: "Appointment not found" });
+        }
+
+        if (!appointment.slotId) {
+            return res.json({ success: false, message: "This appointment is not slot-based" });
+        }
+
+        // Get slot
+        const slot = await availabilitySlotModel.findById(appointment.slotId);
+        if (!slot) {
+            return res.json({ success: false, message: "Slot not found" });
+        }
+
+        // Verify this is the current token
+        if (appointment.slotTokenIndex !== slot.currentToken + 1) {
+            return res.json({ 
+                success: false, 
+                message: `Token mismatch. Current token is ${slot.currentToken + 1}, but appointment token is ${appointment.slotTokenIndex}` 
+            });
+        }
+
+        // Mark appointment as cancelled/wrong
+        appointment.status = 'CANCELLED';
+        appointment.cancelled = true;
+        await appointment.save();
+
+        // Move to next token without updating average time
+        slot.currentToken = slot.currentToken + 1;
+        slot.updatedAt = Date.now();
+        await slot.save();
+
+        // Recalculate estimated start times for all remaining tokens
+        const remainingAppointments = await appointmentModel.find({
+            slotId: appointment.slotId.toString(),
+            slotTokenIndex: { $gt: slot.currentToken },
+            status: { $in: ['BOOKED', 'IN_PROGRESS'] }
+        }).sort({ slotTokenIndex: 1 });
+
+        const slotStart = new Date(`${slot.date}T${slot.startTime}:00`);
+        
+        for (const apt of remainingAppointments) {
+            const estimatedMinutes = (apt.slotTokenIndex - 1) * slot.averageConsultationTime;
+            apt.estimatedStart = slotStart.getTime() + (estimatedMinutes * 60 * 1000);
+            apt.estimatedWaitTime = Math.round((apt.estimatedStart - Date.now()) / (1000 * 60));
+            await apt.save();
+
+            // Reschedule notifications
+            const { scheduleNotifications } = await import('../services/notificationService.js');
+            await scheduleNotifications(apt._id.toString());
+        }
+
+        // Mark next token as IN_PROGRESS if exists
+        const nextAppointment = await appointmentModel.findOne({
+            slotId: appointment.slotId.toString(),
+            slotTokenIndex: slot.currentToken,
+            status: 'BOOKED'
+        });
+
+        if (nextAppointment) {
+            nextAppointment.status = 'IN_PROGRESS';
+            await nextAppointment.save();
+
+            // Send "your turn" notification
+            const { sendNotification } = await import('../services/notificationService.js');
+            await sendNotification(nextAppointment._id.toString(), 'yourTurn');
+        }
+
+        // Build queue snapshot
+        const allAppointments = await appointmentModel.find({
+            slotId: appointment.slotId.toString(),
+            status: { $ne: 'CANCELLED' }
+        }).sort({ slotTokenIndex: 1 });
+
+        const tokens = allAppointments.map(apt => ({
+            index: apt.slotTokenIndex,
+            status: apt.status,
+            estimatedStart: apt.estimatedStart,
+            appointmentId: apt._id.toString(),
+            userId: apt.userId,
+            userData: apt.userData
+        }));
+
+        const maxTokens = Math.max(slot.totalTokens, tokens.length, 5);
+        for (let i = tokens.length + 1; i <= maxTokens; i++) {
+            const estimatedMinutes = (i - 1) * slot.averageConsultationTime;
+            const estimatedStart = slotStart.getTime() + (estimatedMinutes * 60 * 1000);
+            tokens.push({
+                index: i,
+                status: 'AVAILABLE',
+                estimatedStart,
+                appointmentId: null,
+                userId: null,
+                userData: null
+            });
+        }
+
+        const queueSnapshot = {
+            slotId: slot._id.toString(),
+            date: slot.date,
+            startTime: slot.startTime,
+            endTime: slot.endTime,
+            currentToken: slot.currentToken,
+            totalTokens: slot.totalTokens,
+            averageConsultationTime: slot.averageConsultationTime,
+            tokens
+        };
+
+        // Emit socket event
+        const { emitSlotUpdate } = await import('../socket.js');
+        if (emitSlotUpdate) {
+            emitSlotUpdate(slot._id.toString(), queueSnapshot);
+        }
+
+        res.json({
+            success: true,
+            message: "Token marked as wrong and skipped",
+            queueSnapshot
+        });
+    } catch (error) {
+        console.error('Error marking token wrong:', error);
         res.json({ success: false, message: error.message });
     }
 };
