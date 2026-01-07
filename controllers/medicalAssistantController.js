@@ -183,14 +183,16 @@ async function generateAIResponse(patientInput, availableSpecializations) {
 
   // Use gemini-2.5-flash directly (known working model from test endpoint)
   // Skip detection to avoid delays - we know this model works
-  const workingModelName = cachedWorkingModel || 'gemini-2.5-flash';
+  let workingModelName = cachedWorkingModel || 'gemini-2.5-flash';
   
   // Cache it for future requests
   if (!cachedWorkingModel) {
     cachedWorkingModel = 'gemini-2.5-flash';
+    workingModelName = 'gemini-2.5-flash';
   }
   
   console.log(`[GEMINI MODEL] Using model: ${workingModelName} (direct, no detection)`);
+  console.log(`[GEMINI MODEL] Cached model: ${cachedWorkingModel || 'none'}`);
   
   // Create a fresh model instance for each request to avoid caching
   const safetySettings = [
@@ -287,14 +289,51 @@ IMPORTANT:
     
     const callStartTime = Date.now();
     console.log(`[GEMINI API CALL] Starting API call...`);
-    const result = await model.generateContent(prompt);
-    const callEndTime = Date.now();
-    const callDuration = callEndTime - callStartTime;
+    console.log(`[GEMINI API CALL] Model: ${workingModelName}`);
+    console.log(`[GEMINI API CALL] Prompt preview (first 200 chars): "${prompt.substring(0, 200)}..."`);
     
-    console.log(`[GEMINI API CALL] ✅ API call completed successfully in ${callDuration}ms`);
-    console.log(`[GEMINI API CALL] API key was used successfully!`);
-    const response = await result.response;
-    const text = response.text();
+    let result;
+    let response;
+    let text;
+    
+    try {
+      result = await model.generateContent(prompt);
+      const callEndTime = Date.now();
+      const callDuration = callEndTime - callStartTime;
+      
+      console.log(`[GEMINI API CALL] ✅ API call completed successfully in ${callDuration}ms`);
+      console.log(`[GEMINI API CALL] API key was used successfully!`);
+      
+      response = await result.response;
+      text = response.text();
+      
+      if (!text || text.trim().length === 0) {
+        throw new Error('Gemini API returned empty response');
+      }
+    } catch (apiError) {
+      const callEndTime = Date.now();
+      const callDuration = callEndTime - callStartTime;
+      
+      console.error(`[GEMINI API CALL] ❌ API call failed after ${callDuration}ms`);
+      console.error(`[GEMINI API CALL] Error Name: ${apiError.name}`);
+      console.error(`[GEMINI API CALL] Error Message: ${apiError.message}`);
+      console.error(`[GEMINI API CALL] Error Code: ${apiError.code || 'N/A'}`);
+      console.error(`[GEMINI API CALL] Error Status: ${apiError.status || 'N/A'}`);
+      console.error(`[GEMINI API CALL] Error Details:`, JSON.stringify(apiError, Object.getOwnPropertyNames(apiError), 2));
+      
+      // Check for specific error types
+      if (apiError.message?.includes('API key') || apiError.message?.includes('authentication')) {
+        throw new Error(`Gemini API authentication failed: ${apiError.message}`);
+      } else if (apiError.message?.includes('model') || apiError.message?.includes('not found')) {
+        throw new Error(`Gemini model not found or unavailable: ${apiError.message}`);
+      } else if (apiError.message?.includes('quota') || apiError.message?.includes('rate limit')) {
+        throw new Error(`Gemini API quota exceeded: ${apiError.message}`);
+      } else if (apiError.message?.includes('timeout')) {
+        throw new Error(`Gemini API request timeout: ${apiError.message}`);
+      } else {
+        throw new Error(`Gemini API call failed: ${apiError.message || 'Unknown error'}`);
+      }
+    }
     
     const responseTimestamp = new Date().toISOString();
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
@@ -597,34 +636,59 @@ export const analyzeSymptoms = async (req, res) => {
       console.error(`[ANALYZE SYMPTOMS ERROR] Error Message: ${error.message}`);
       console.error(`[ANALYZE SYMPTOMS ERROR] Error Code: ${error.code || 'N/A'}`);
       console.error(`[ANALYZE SYMPTOMS ERROR] Error Status: ${error.status || 'N/A'}`);
-      console.error(`[ANALYZE SYMPTOMS ERROR] Error Response:`, error.response?.data || 'N/A');
-      console.error(`[ANALYZE SYMPTOMS ERROR] Full Error Object:`, JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
-      console.error(`[ANALYZE SYMPTOMS ERROR] Stack: ${error.stack}`);
+      console.error(`[ANALYZE SYMPTOMS ERROR] Error Status Code: ${error.statusCode || 'N/A'}`);
+      
+      // Log full error details for debugging
+      if (error.cause) {
+        console.error(`[ANALYZE SYMPTOMS ERROR] Error Cause:`, error.cause);
+      }
+      if (error.response) {
+        console.error(`[ANALYZE SYMPTOMS ERROR] Error Response:`, error.response);
+      }
+      if (error.stack) {
+        console.error(`[ANALYZE SYMPTOMS ERROR] Error Stack:`, error.stack);
+      }
+      
+      // Try to extract more details from the error
+      try {
+        const errorString = JSON.stringify(error, Object.getOwnPropertyNames(error), 2);
+        console.error(`[ANALYZE SYMPTOMS ERROR] Full Error Object:`, errorString);
+      } catch (stringifyError) {
+        console.error(`[ANALYZE SYMPTOMS ERROR] Could not stringify error:`, stringifyError);
+      }
+      
       console.error('═══════════════════════════════════════════════════════════════\n');
       
       // FAIL-SAFE: Return error instead of static fallback
-      // DO NOT return generic chatbot response
       console.error('[ANALYZE SYMPTOMS] Returning error response to client');
       
-      // Provide more specific error messages
+      // Provide more specific error messages based on error content
       let errorMessage = 'AI service is currently unavailable. Please try again in a moment or contact support.';
       let errorType = 'gemini_error';
       
-      if (error.message?.includes('Gemini API not configured') || error.message?.includes('GEMINI_API_KEY')) {
+      const errorMsgLower = (error.message || '').toLowerCase();
+      
+      if (errorMsgLower.includes('gemini api not configured') || errorMsgLower.includes('gemini_api_key')) {
         errorMessage = 'AI service is not configured. The GEMINI_API_KEY environment variable is missing. Please contact support.';
         errorType = 'config_error';
-      } else if (error.message?.includes('API key expired') || error.message?.includes('API_KEY_INVALID') || error.message?.includes('API key expired')) {
-        errorMessage = 'AI service API key has expired. Please contact support to renew the API key.';
+      } else if (errorMsgLower.includes('api key expired') || errorMsgLower.includes('api_key_invalid') || errorMsgLower.includes('authentication failed')) {
+        errorMessage = 'AI service API key has expired or is invalid. Please contact support to renew the API key.';
         errorType = 'api_key_expired';
-      } else if (error.message?.includes('timeout') || error.code === 'ETIMEDOUT') {
+      } else if (errorMsgLower.includes('model not found') || errorMsgLower.includes('model') && errorMsgLower.includes('not found')) {
+        errorMessage = 'AI service model is not available. Please contact support.';
+        errorType = 'model_error';
+      } else if (errorMsgLower.includes('timeout') || error.code === 'ETIMEDOUT') {
         errorMessage = 'AI service request timed out. Please try again.';
         errorType = 'timeout_error';
-      } else if (error.message?.includes('quota') || error.message?.includes('rate limit')) {
+      } else if (errorMsgLower.includes('quota') || errorMsgLower.includes('rate limit')) {
         errorMessage = 'AI service quota exceeded. Please try again later.';
         errorType = 'quota_error';
-      } else if (error.message?.includes('API key') || error.message?.includes('authentication')) {
+      } else if (errorMsgLower.includes('api key') || errorMsgLower.includes('authentication')) {
         errorMessage = 'AI service authentication failed. The API key may be invalid or expired. Please contact support.';
         errorType = 'auth_error';
+      } else if (errorMsgLower.includes('empty response')) {
+        errorMessage = 'AI service returned an empty response. Please try again.';
+        errorType = 'empty_response_error';
       } else if (error.message) {
         // Include error message in development for debugging
         if (process.env.NODE_ENV === 'development') {
@@ -636,7 +700,7 @@ export const analyzeSymptoms = async (req, res) => {
         success: false,
         message: errorMessage,
         error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-        requiresRetry: errorType !== 'config_error' && errorType !== 'auth_error',
+        requiresRetry: errorType !== 'config_error' && errorType !== 'auth_error' && errorType !== 'api_key_expired',
         errorType: errorType,
       });
     }
