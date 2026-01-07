@@ -88,25 +88,58 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   console.log(`[GEMINI VERIFY] @ ${timestamp} - API key verified: length=${geminiApiKey.length}`);
 
   // Create a fresh model instance for each request to avoid caching
-  const model = genAI.getGenerativeModel({ 
-    model: 'gemini-pro',
-    safetySettings: [
-      {
-        category: 'HARM_CATEGORY_MEDICAL',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-      },
-      {
-        category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
-        threshold: 'BLOCK_MEDIUM_AND_ABOVE'
-      }
-    ],
-    generationConfig: {
-      temperature: 0.9, // Higher temperature for more varied responses
-      topP: 0.95,
-      topK: 40,
-      maxOutputTokens: 1024,
+  // Try different model names - if one fails, try the next
+  let model;
+  const safetySettings = [
+    {
+      category: 'HARM_CATEGORY_MEDICAL',
+      threshold: 'BLOCK_MEDIUM_AND_ABOVE'
+    },
+    {
+      category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+      threshold: 'BLOCK_MEDIUM_AND_ABOVE'
     }
-  });
+  ];
+  const generationConfig = {
+    temperature: 0.9, // Higher temperature for more varied responses
+    topP: 0.95,
+    topK: 40,
+    maxOutputTokens: 1024,
+  };
+  
+  // Try gemini-1.5-flash-latest first
+  try {
+    model = genAI.getGenerativeModel({ 
+      model: 'gemini-1.5-flash-latest',
+      safetySettings,
+      generationConfig
+    });
+    console.log(`[GEMINI MODEL] Using model: gemini-1.5-flash-latest`);
+  } catch (modelError) {
+    console.warn(`[GEMINI MODEL] gemini-1.5-flash-latest failed: ${modelError.message}`);
+    // Try gemini-1.5-pro-latest
+    try {
+      model = genAI.getGenerativeModel({ 
+        model: 'gemini-1.5-pro-latest',
+        safetySettings,
+        generationConfig
+      });
+      console.log(`[GEMINI MODEL] Using model: gemini-1.5-pro-latest`);
+    } catch (modelError2) {
+      console.warn(`[GEMINI MODEL] gemini-1.5-pro-latest failed: ${modelError2.message}`);
+      // Try without specifying model (uses default)
+      try {
+        model = genAI.getGenerativeModel({
+          safetySettings,
+          generationConfig
+        });
+        console.log(`[GEMINI MODEL] Using default model (no model name specified)`);
+      } catch (modelError3) {
+        console.error(`[GEMINI MODEL] All model attempts failed. Last error: ${modelError3.message}`);
+        throw new Error(`Failed to initialize Gemini model. Please check available models. Error: ${modelError3.message}`);
+      }
+    }
+  }
 
   const availableSpecsList = availableSpecializations.join(', ');
 
