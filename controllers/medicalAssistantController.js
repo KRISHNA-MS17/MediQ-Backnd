@@ -406,9 +406,8 @@ export const analyzeSymptoms = async (req, res) => {
     // Find recommended doctors
     const recommendedDoctors = await findRecommendedDoctors(aiResponse.recommendedSpecialization);
     
-    // Generate unique debug nonce to prove dynamism
-    const debugNonce = `NONCE-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    const backendTimestamp = new Date().toISOString();
+    // debugNonce and backendTimestamp are already declared above for greeting responses
+    // Reuse them here for consistency
     
     // Ensure we always have a specialization
     const finalSpecialization = aiResponse.recommendedSpecialization || 'General physician';
