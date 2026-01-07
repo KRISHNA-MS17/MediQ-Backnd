@@ -89,7 +89,7 @@ async function generateAIResponse(patientInput, availableSpecializations) {
 
   // Create a fresh model instance for each request to avoid caching
   const model = genAI.getGenerativeModel({ 
-    model: 'gemini-1.5-flash',
+    model: 'gemini-pro',
     safetySettings: [
       {
         category: 'HARM_CATEGORY_MEDICAL',

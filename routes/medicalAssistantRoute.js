@@ -27,7 +27,7 @@ medicalAssistantRouter.get('/test', async (req, res) => {
     try {
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const testGenAI = new GoogleGenerativeAI(trimmedKey);
-      const model = testGenAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+      const model = testGenAI.getGenerativeModel({ model: 'gemini-pro' });
       const result = await model.generateContent('Say "test"');
       const response = await result.response;
       const text = response.text();
