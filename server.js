@@ -14,6 +14,7 @@ import slotQueueRouter from './routes/slotQueueRoute.js'
 import medicalAssistantRouter from './routes/medicalAssistantRoute.js'
 import notificationRouter from './routes/notificationRoute.js'
 import etaRouter from './routes/etaRoute.js'
+import reviewRouter from './routes/reviewRoute.js'
 import { startNotificationJob } from './jobs/notificationJob.js'
 import { initializeSocket } from './socket.js'
 
@@ -70,6 +71,7 @@ const startServer = async () => {
     app.use('/api/medical-assistant', medicalAssistantRouter)
     app.use('/api/notifications', notificationRouter)
     app.use('/api/eta', etaRouter)
+    app.use('/api/reviews', reviewRouter)
 
     app.get('/',(req,res)=>{
         res.send('API WORKING')

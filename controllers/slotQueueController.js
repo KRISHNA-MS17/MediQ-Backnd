@@ -223,6 +223,7 @@ export const markTokenCompleted = async (req, res) => {
                 const estimatedWait = position * slot.averageConsultationTime;
                 
                 // Emit with full payload including affected appointments, timestamp, and positionInQueueMap
+                // Include appointment status for real-time UI updates
                 emitQueueUpdate(
                     apt._id.toString(), 
                     slot._id.toString(), 
@@ -234,7 +235,9 @@ export const markTokenCompleted = async (req, res) => {
                         estimatedWaitMin: Math.round(estimatedWait),
                         averageServiceTimePerPatient: slot.averageConsultationTime,
                         lastUpdatedAt,
-                        positionInQueueMap // Include map for all clients
+                        positionInQueueMap, // Include map for all clients
+                        appointmentStatus: apt.status || (apt.isCompleted ? 'COMPLETED' : 'BOOKED'), // Include status
+                        isCompleted: apt.status === 'COMPLETED' || apt.isCompleted // Include completion flag
                     },
                     affectedAppointmentIds
                 );

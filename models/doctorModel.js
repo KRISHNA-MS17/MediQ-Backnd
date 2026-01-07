@@ -33,7 +33,19 @@ const doctorSchema = new mongoose.Schema({
         address: { type: String, default: '' }
     },
     // Contact Information
-    phone: { type: String, default: '' }
+    phone: { type: String, default: '' },
+    // Rating Fields
+    averageRating: { 
+        type: Number, 
+        default: 0,
+        min: 0,
+        max: 5
+    },
+    totalRatings: { 
+        type: Number, 
+        default: 0,
+        min: 0
+    }
 }, { minimize: false })
 
 const doctorModel = mongoose.models.doctor || mongoose.model("doctor", doctorSchema);

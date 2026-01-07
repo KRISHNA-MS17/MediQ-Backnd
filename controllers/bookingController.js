@@ -272,7 +272,11 @@ export const getAppointmentQueue = async (req, res) => {
                 estimatedWaitMin: Math.round(estimatedWaitMin),
                 averageServiceTimePerPatient,
                 doctor: doctorInfo,
-                lastUpdatedAt: new Date().toISOString()
+                lastUpdatedAt: new Date().toISOString(),
+                // Include appointment status for UI logic
+                appointmentStatus: appointment.status || (appointment.isCompleted ? 'COMPLETED' : 'BOOKED'),
+                isCompleted: appointment.isCompleted || appointment.status === 'COMPLETED',
+                servingAppointmentId: slot.servingAppointmentId || null
             }
         });
     } catch (error) {
