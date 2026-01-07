@@ -20,6 +20,85 @@ const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
 console.log(`[GEMINI INIT] genAI instance created: ${!!genAI}`);
 console.log('═══════════════════════════════════════════════════════════════');
 
+// Cache for working model name
+let cachedWorkingModel = null;
+
+/**
+ * Detect and cache the working Gemini model
+ */
+async function detectWorkingModel() {
+  if (cachedWorkingModel) {
+    return cachedWorkingModel;
+  }
+  
+  if (!genAI || !geminiApiKey) {
+    return null;
+  }
+  
+  // List of models to try (in order of preference)
+  const modelsToTry = [
+    'gemini-1.5-flash',
+    'gemini-1.5-pro',
+    'gemini-1.0-pro',
+    'gemini-pro',
+    'models/gemini-1.5-flash',
+    'models/gemini-1.5-pro',
+    'models/gemini-1.0-pro',
+    'models/gemini-pro'
+  ];
+  
+  // Try to fetch available models from API
+  try {
+    const https = await import('https');
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`;
+    const response = await new Promise((resolve, reject) => {
+      https.get(url, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(e);
+          }
+        });
+      }).on('error', reject);
+    });
+    
+    if (response.models) {
+      const availableModels = response.models
+        .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+        .map(m => m.name.replace('models/', ''));
+      console.log('[GEMINI MODEL] Available models from API:', availableModels);
+      // Prepend available models to the list
+      modelsToTry.unshift(...availableModels.slice(0, 5));
+    }
+  } catch (error) {
+    console.warn('[GEMINI MODEL] Could not fetch available models:', error.message);
+  }
+  
+  // Try each model
+  for (const modelName of modelsToTry) {
+    try {
+      const model = genAI.getGenerativeModel({ model: modelName });
+      const result = await model.generateContent('test');
+      const response = await result.response;
+      const text = response.text();
+      if (text) {
+        cachedWorkingModel = modelName;
+        console.log(`[GEMINI MODEL] ✅ Working model detected: ${modelName}`);
+        return modelName;
+      }
+    } catch (error) {
+      console.log(`[GEMINI MODEL] ❌ Model ${modelName} failed: ${error.message}`);
+      continue;
+    }
+  }
+  
+  console.error('[GEMINI MODEL] ❌ No working model found!');
+  return null;
+}
+
 /**
  * Get available specializations from database
  */
@@ -87,9 +166,13 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   
   console.log(`[GEMINI VERIFY] @ ${timestamp} - API key verified: length=${geminiApiKey.length}`);
 
+  // Detect and use the working model (cached after first detection)
+  const workingModelName = await detectWorkingModel();
+  if (!workingModelName) {
+    throw new Error('No working Gemini model found. Please check API key and model availability.');
+  }
+  
   // Create a fresh model instance for each request to avoid caching
-  // Use correct model names: gemini-1.5-flash or gemini-1.0-pro
-  let model;
   const safetySettings = [
     {
       category: 'HARM_CATEGORY_MEDICAL',
@@ -107,29 +190,12 @@ async function generateAIResponse(patientInput, availableSpecializations) {
     maxOutputTokens: 1024,
   };
   
-  // Try gemini-1.5-flash first (faster, recommended)
-  try {
-    model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash',
-      safetySettings,
-      generationConfig
-    });
-    console.log(`[GEMINI MODEL] Using model: gemini-1.5-flash`);
-  } catch (modelError) {
-    console.warn(`[GEMINI MODEL] gemini-1.5-flash failed: ${modelError.message}`);
-    // Fallback to gemini-1.0-pro
-    try {
-      model = genAI.getGenerativeModel({ 
-        model: 'gemini-1.0-pro',
-        safetySettings,
-        generationConfig
-      });
-      console.log(`[GEMINI MODEL] Using model: gemini-1.0-pro`);
-    } catch (modelError2) {
-      console.error(`[GEMINI MODEL] Both models failed. gemini-1.5-flash error: ${modelError.message}, gemini-1.0-pro error: ${modelError2.message}`);
-      throw new Error(`Failed to initialize Gemini model. Tried gemini-1.5-flash and gemini-1.0-pro. Please check API key and model availability.`);
-    }
-  }
+  const model = genAI.getGenerativeModel({ 
+    model: workingModelName,
+    safetySettings,
+    generationConfig
+  });
+  console.log(`[GEMINI MODEL] Using detected working model: ${workingModelName}`);
 
   const availableSpecsList = availableSpecializations.join(', ');
 

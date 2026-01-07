@@ -3,7 +3,7 @@ import { analyzeSymptoms } from '../controllers/medicalAssistantController.js';
 
 const medicalAssistantRouter = express.Router();
 
-// Test endpoint to check API key configuration
+// Test endpoint to check API key configuration and list available models
 medicalAssistantRouter.get('/test', async (req, res) => {
   const hasApiKey = !!process.env.GEMINI_API_KEY;
   const apiKeyLength = process.env.GEMINI_API_KEY?.length || 0;
@@ -12,40 +12,87 @@ medicalAssistantRouter.get('/test', async (req, res) => {
   
   // Try to import and check genAI instance
   let genAICheck = false;
+  let availableModels = [];
+  let workingModel = null;
+  let apiKeyValid = false;
+  let apiTestError = null;
+  
   try {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const testGenAI = trimmedKey ? new GoogleGenerativeAI(trimmedKey) : null;
     genAICheck = !!testGenAI;
-  } catch (error) {
-    console.error('[TEST] Error creating genAI instance:', error.message);
-  }
-  
-  // Try a simple API call to verify the key works
-  let apiKeyValid = false;
-  let apiTestError = null;
-  if (trimmedKey && genAICheck) {
-    try {
-      const { GoogleGenerativeAI } = await import('@google/generative-ai');
-      const testGenAI = new GoogleGenerativeAI(trimmedKey);
-      // Use correct model names: gemini-1.5-flash or gemini-1.0-pro
-      let model;
+    
+    if (trimmedKey && genAICheck) {
+      // List available models
       try {
-        model = testGenAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-      } catch (e1) {
+        const https = await import('https');
+        const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${trimmedKey}`;
+        const data = await new Promise((resolve, reject) => {
+          https.get(url, (res) => {
+            let responseData = '';
+            res.on('data', chunk => responseData += chunk);
+            res.on('end', () => {
+              try {
+                resolve(JSON.parse(responseData));
+              } catch (e) {
+                reject(e);
+              }
+            });
+          }).on('error', reject);
+        });
+        
+        if (data.models) {
+          availableModels = data.models
+            .filter(m => m.supportedGenerationMethods?.includes('generateContent'))
+            .map(m => m.name.replace('models/', ''));
+          console.log('[TEST] Available models:', availableModels);
+        }
+      } catch (listError) {
+        console.error('[TEST] Error listing models:', listError.message);
+      }
+      
+      // Try to find a working model
+      const modelsToTry = [
+        'gemini-1.5-flash',
+        'gemini-1.5-pro',
+        'gemini-1.0-pro',
+        'gemini-pro',
+        'models/gemini-1.5-flash',
+        'models/gemini-1.5-pro',
+        'models/gemini-1.0-pro',
+        'models/gemini-pro'
+      ];
+      
+      // Also try models from the available list
+      if (availableModels.length > 0) {
+        modelsToTry.unshift(...availableModels.slice(0, 5));
+      }
+      
+      for (const modelName of modelsToTry) {
         try {
-          model = testGenAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
-        } catch (e2) {
-          throw new Error(`Both models failed. gemini-1.5-flash: ${e1.message}, gemini-1.0-pro: ${e2.message}`);
+          const model = testGenAI.getGenerativeModel({ model: modelName });
+          const result = await model.generateContent('Say "test"');
+          const response = await result.response;
+          const text = response.text();
+          if (text) {
+            workingModel = modelName;
+            apiKeyValid = true;
+            console.log(`[TEST] Working model found: ${modelName}`);
+            break;
+          }
+        } catch (modelError) {
+          console.log(`[TEST] Model ${modelName} failed: ${modelError.message}`);
+          continue;
         }
       }
-      const result = await model.generateContent('Say "test"');
-      const response = await result.response;
-      const text = response.text();
-      apiKeyValid = !!text;
-    } catch (error) {
-      apiTestError = error.message;
-      console.error('[TEST] API key test failed:', error.message);
+      
+      if (!apiKeyValid) {
+        apiTestError = `No working model found. Tried: ${modelsToTry.join(', ')}. Available models: ${availableModels.join(', ') || 'Could not fetch'}`;
+      }
     }
+  } catch (error) {
+    console.error('[TEST] Error:', error.message);
+    apiTestError = error.message;
   }
   
   res.json({
@@ -58,6 +105,8 @@ medicalAssistantRouter.get('/test', async (req, res) => {
       apiKeyConfigured: hasApiKey && apiKeyLength > 0,
       genAICreated: genAICheck,
       apiKeyValid: apiKeyValid,
+      workingModel: workingModel,
+      availableModels: availableModels,
       apiTestError: apiTestError,
     },
   });
