@@ -476,6 +476,9 @@ export const analyzeSymptoms = async (req, res) => {
       if (error.message?.includes('Gemini API not configured') || error.message?.includes('GEMINI_API_KEY')) {
         errorMessage = 'AI service is not configured. The GEMINI_API_KEY environment variable is missing. Please contact support.';
         errorType = 'config_error';
+      } else if (error.message?.includes('API key expired') || error.message?.includes('API_KEY_INVALID') || error.message?.includes('API key expired')) {
+        errorMessage = 'AI service API key has expired. Please contact support to renew the API key.';
+        errorType = 'api_key_expired';
       } else if (error.message?.includes('timeout') || error.code === 'ETIMEDOUT') {
         errorMessage = 'AI service request timed out. Please try again.';
         errorType = 'timeout_error';
@@ -483,7 +486,7 @@ export const analyzeSymptoms = async (req, res) => {
         errorMessage = 'AI service quota exceeded. Please try again later.';
         errorType = 'quota_error';
       } else if (error.message?.includes('API key') || error.message?.includes('authentication')) {
-        errorMessage = 'AI service authentication failed. Please contact support.';
+        errorMessage = 'AI service authentication failed. The API key may be invalid or expired. Please contact support.';
         errorType = 'auth_error';
       } else if (error.message) {
         // Include error message in development for debugging
