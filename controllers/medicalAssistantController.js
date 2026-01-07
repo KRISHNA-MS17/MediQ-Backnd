@@ -28,31 +28,39 @@ let cachedWorkingModel = null;
  */
 async function detectWorkingModel() {
   if (cachedWorkingModel) {
+    console.log(`[GEMINI MODEL] Using cached working model: ${cachedWorkingModel}`);
     return cachedWorkingModel;
   }
   
   if (!genAI || !geminiApiKey) {
+    console.error('[GEMINI MODEL] genAI or API key not available');
     return null;
   }
   
   // List of models to try (in order of preference)
+  // Start with gemini-2.5-flash since we know it works from the test endpoint
   const modelsToTry = [
+    'gemini-2.5-flash',  // Known working model from test
+    'gemini-2.5-pro',
+    'gemini-2.0-flash',
     'gemini-1.5-flash',
     'gemini-1.5-pro',
     'gemini-1.0-pro',
     'gemini-pro',
+    'models/gemini-2.5-flash',
+    'models/gemini-2.5-pro',
     'models/gemini-1.5-flash',
     'models/gemini-1.5-pro',
     'models/gemini-1.0-pro',
     'models/gemini-pro'
   ];
   
-  // Try to fetch available models from API
+  // Try to fetch available models from API (non-blocking)
   try {
     const https = await import('https');
     const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${geminiApiKey}`;
     const response = await new Promise((resolve, reject) => {
-      https.get(url, (res) => {
+      const req = https.get(url, (res) => {
         let data = '';
         res.on('data', chunk => data += chunk);
         res.on('end', () => {
@@ -62,7 +70,12 @@ async function detectWorkingModel() {
             reject(e);
           }
         });
-      }).on('error', reject);
+      });
+      req.on('error', reject);
+      req.setTimeout(5000, () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
     });
     
     if (response.models) {
@@ -74,19 +87,21 @@ async function detectWorkingModel() {
       modelsToTry.unshift(...availableModels.slice(0, 5));
     }
   } catch (error) {
-    console.warn('[GEMINI MODEL] Could not fetch available models:', error.message);
+    console.warn('[GEMINI MODEL] Could not fetch available models (non-critical):', error.message);
+    // Continue with default models
   }
   
-  // Try each model
+  // Try each model with a simple test
   for (const modelName of modelsToTry) {
     try {
+      console.log(`[GEMINI MODEL] Testing model: ${modelName}`);
       const model = genAI.getGenerativeModel({ model: modelName });
       const result = await model.generateContent('test');
       const response = await result.response;
       const text = response.text();
       if (text) {
         cachedWorkingModel = modelName;
-        console.log(`[GEMINI MODEL] ✅ Working model detected: ${modelName}`);
+        console.log(`[GEMINI MODEL] ✅ Working model detected and cached: ${modelName}`);
         return modelName;
       }
     } catch (error) {
@@ -95,7 +110,7 @@ async function detectWorkingModel() {
     }
   }
   
-  console.error('[GEMINI MODEL] ❌ No working model found!');
+  console.error('[GEMINI MODEL] ❌ No working model found after trying all models!');
   return null;
 }
 
@@ -166,11 +181,16 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   
   console.log(`[GEMINI VERIFY] @ ${timestamp} - API key verified: length=${geminiApiKey.length}`);
 
-  // Detect and use the working model (cached after first detection)
-  const workingModelName = await detectWorkingModel();
-  if (!workingModelName) {
-    throw new Error('No working Gemini model found. Please check API key and model availability.');
+  // Use gemini-2.5-flash directly (known working model from test endpoint)
+  // Skip detection to avoid delays - we know this model works
+  const workingModelName = cachedWorkingModel || 'gemini-2.5-flash';
+  
+  // Cache it for future requests
+  if (!cachedWorkingModel) {
+    cachedWorkingModel = 'gemini-2.5-flash';
   }
+  
+  console.log(`[GEMINI MODEL] Using model: ${workingModelName} (direct, no detection)`);
   
   // Create a fresh model instance for each request to avoid caching
   const safetySettings = [
@@ -190,55 +210,83 @@ async function generateAIResponse(patientInput, availableSpecializations) {
     maxOutputTokens: 1024,
   };
   
-  const model = genAI.getGenerativeModel({ 
-    model: workingModelName,
-    safetySettings,
-    generationConfig
-  });
-  console.log(`[GEMINI MODEL] Using detected working model: ${workingModelName}`);
+  let model;
+  try {
+    model = genAI.getGenerativeModel({ 
+      model: workingModelName,
+      safetySettings,
+      generationConfig
+    });
+    console.log(`[GEMINI MODEL] ✅ Model instance created: ${workingModelName}`);
+  } catch (modelError) {
+    console.error(`[GEMINI MODEL] ❌ Failed with ${workingModelName}: ${modelError.message}`);
+    // Try detection as fallback
+    console.log(`[GEMINI MODEL] Attempting model detection...`);
+    cachedWorkingModel = null;
+    try {
+      const detectedModel = await detectWorkingModel();
+      if (detectedModel) {
+        workingModelName = detectedModel;
+        cachedWorkingModel = detectedModel;
+        model = genAI.getGenerativeModel({ 
+          model: workingModelName,
+          safetySettings,
+          generationConfig
+        });
+        console.log(`[GEMINI MODEL] ✅ Using detected model: ${workingModelName}`);
+      } else {
+        throw new Error(`Model detection failed. Original error: ${modelError.message}`);
+      }
+    } catch (detectError) {
+      throw new Error(`Failed to create model instance. Tried ${workingModelName} and detection failed. Error: ${detectError.message}`);
+    }
+  }
 
   const availableSpecsList = availableSpecializations.join(', ');
 
-  // Build prompt for NATURAL LANGUAGE response with structured metadata
-  // Ask for JSON but with aiText as natural language (not structured templates)
-  const prompt = `You are a medical assistant AI. Provide FIRST-AID GUIDANCE and DOCTOR SPECIALIZATION RECOMMENDATIONS only. You do NOT diagnose, prescribe medications, or provide medical treatment advice.
+  // Build clear, structured prompt for Gemini
+  const prompt = `You are a helpful medical assistant. Analyze the patient's symptoms and provide guidance.
+
+PATIENT SYMPTOMS: "${patientInput}"
+
+AVAILABLE DOCTOR SPECIALIZATIONS: ${availableSpecsList}
+
+YOUR TASK:
+1. Provide basic first-aid guidance specific to these symptoms
+2. Recommend the most appropriate doctor specialization from the list above
+3. Write in a natural, conversational tone
 
 CRITICAL RULES:
-1. NEVER provide diagnoses, medication names, dosages, or treatment plans
-2. ONLY provide basic first-aid measures and general wellness advice
-3. Suggest appropriate doctor specialization for consultation
-4. For emergencies (chest pain, difficulty breathing, loss of consciousness, severe bleeding), recommend immediate emergency care
-5. **CRITICAL: Your response MUST be UNIQUE and SPECIFIC to the exact symptoms described. Different symptoms MUST receive DIFFERENT advice.**
+- DO NOT diagnose, prescribe medications, or give treatment plans
+- DO NOT provide medication names or dosages
+- ONLY provide basic first-aid measures and general wellness advice
+- For chest pain, difficulty breathing, severe bleeding, or loss of consciousness, mark as emergency
+- Your response MUST be specific to the exact symptoms - different symptoms = different advice
 
-Patient's Symptoms: "${patientInput}"
-Request ID: ${requestId} (This ensures unique responses)
-Available Specializations: ${availableSpecsList}
-
-Provide a JSON response with:
+RESPOND IN THIS EXACT JSON FORMAT (no markdown, no code blocks, just valid JSON):
 {
-  "aiText": "Write a natural, conversational response in plain language. Provide first-aid guidance specific to the symptoms described. Make it sound like you're talking to the patient directly. Be specific - 'joint pain' and 'teeth pain' should have completely different advice. Include why you're recommending a specific doctor type. Write naturally, not as bullet points or templates.",
-  "recommendedSpecialization": "One specialization from: ${availableSpecsList}. Examples: 'Dentist' for teeth pain, 'Orthopedic' for joint pain, 'Cardiologist' for chest pain, 'Dermatologist' for skin issues.",
+  "aiText": "Write 3-4 sentences providing first-aid guidance for ${patientInput}. Be specific and helpful. Explain why you recommend a particular doctor type.",
+  "recommendedSpecialization": "Choose ONE from: ${availableSpecsList}. Examples: 'Cardiologist' for chest pain, 'Dentist' for teeth pain, 'Orthopedic' for joint pain, 'Dermatologist' for skin issues, 'General physician' for general symptoms.",
   "isEmergency": false
 }
 
-IMPORTANT:
-- aiText must be natural, conversational language (not structured templates)
-- Different symptoms MUST produce different wording and advice
-- recommendedSpecialization must be from the list above
-- If unsure, use "General physician" but still provide symptom-specific advice`;
+IMPORTANT: 
+- Return ONLY valid JSON, no other text
+- recommendedSpecialization MUST match exactly one from: ${availableSpecsList}
+- aiText should be natural conversation, not bullet points`;
 
   try {
-    console.log(`[GEMINI API CALL] @ ${timestamp} - Calling Gemini API with Request ID: ${requestId}`);
+    console.log(`[GEMINI API CALL] @ ${timestamp} - Calling Gemini API`);
+    console.log(`[GEMINI API CALL] Model: ${workingModelName}`);
+    console.log(`[GEMINI API CALL] User Input: "${patientInput}"`);
     console.log(`[GEMINI API CALL] Prompt length: ${prompt.length} characters`);
-    console.log(`[GEMINI API CALL] Prompt includes user input: ${prompt.includes(patientInput) ? 'YES ✓' : 'NO ✗'}`);
-    console.log(`[GEMINI API CALL] API Key configured: ${!!geminiApiKey}`);
-    console.log(`[GEMINI API CALL] API Key length: ${geminiApiKey?.length || 0}`);
-    console.log(`[GEMINI API CALL] genAI instance: ${!!genAI}`);
-    console.log(`[GEMINI API CALL] Model instance created: ${!!model}`);
-    console.log(`[GEMINI API CALL] About to call model.generateContent() with API key...`);
+    
+    if (!model) {
+      throw new Error('Model instance is null - cannot generate content');
+    }
     
     const callStartTime = Date.now();
-    console.log(`[GEMINI API CALL] Starting API call at ${new Date().toISOString()}`);
+    console.log(`[GEMINI API CALL] Starting API call...`);
     const result = await model.generateContent(prompt);
     const callEndTime = Date.now();
     const callDuration = callEndTime - callStartTime;
@@ -593,28 +641,29 @@ export const analyzeSymptoms = async (req, res) => {
       });
     }
     
-    // Find recommended doctors
-    const recommendedDoctors = await findRecommendedDoctors(aiResponse.recommendedSpecialization);
-    
-    // debugNonce and backendTimestamp are already declared above for greeting responses
-    // Reuse them here for consistency
-    
     // Ensure we always have a specialization
     const finalSpecialization = aiResponse.recommendedSpecialization || 'General physician';
     
-    console.log(`[ANALYZE SYMPTOMS] Final specialization being returned: "${finalSpecialization}"`);
-    console.log(`[ANALYZE SYMPTOMS] aiText being returned (first 300 chars): "${aiResponse.aiText.substring(0, 300)}..."`);
-    console.log(`[ANALYZE SYMPTOMS] Full aiText: "${aiResponse.aiText}"`);
+    console.log(`[ANALYZE SYMPTOMS] Specialization from AI: "${aiResponse.recommendedSpecialization}"`);
+    console.log(`[ANALYZE SYMPTOMS] Final specialization: "${finalSpecialization}"`);
+    console.log(`[ANALYZE SYMPTOMS] Finding doctors for specialization: "${finalSpecialization}"`);
     
-    // Build response with RAW Gemini text - NO templates, NO static text assembly
+    // Find recommended doctors based on specialization
+    const recommendedDoctors = await findRecommendedDoctors(finalSpecialization, 3);
+    
+    console.log(`[ANALYZE SYMPTOMS] Found ${recommendedDoctors.length} doctors for "${finalSpecialization}"`);
+    console.log(`[ANALYZE SYMPTOMS] aiText length: ${aiResponse.aiText.length} characters`);
+    console.log(`[ANALYZE SYMPTOMS] aiText preview: "${aiResponse.aiText.substring(0, 200)}..."`);
+    
+    // Build response with all required fields
     const responseData = {
       isGreeting: false,
       isSerious: aiResponse.isEmergency || false,
-      aiText: aiResponse.aiText, // RAW Gemini-generated text - no templates
+      aiText: aiResponse.aiText.trim(), // RAW Gemini-generated text
       suggestedSpeciality: finalSpecialization,
-      recommendedDoctors: recommendedDoctors,
-      debugNonce: debugNonce, // MANDATORY: Required to prove backend dynamism
-      backendTimestamp: backendTimestamp, // MANDATORY: Prove each response is fresh
+      recommendedDoctors: recommendedDoctors, // Array of available doctors
+      debugNonce: debugNonce,
+      backendTimestamp: backendTimestamp,
     };
     
     // Add emergency warning if needed
@@ -622,9 +671,7 @@ export const analyzeSymptoms = async (req, res) => {
       responseData.emergencyWarning = '🚨 EMERGENCY: Please seek immediate medical attention or call emergency services.';
     }
     
-    console.log(`[ANALYZE SYMPTOMS] Response built with debugNonce: ${debugNonce}`);
-    console.log(`[ANALYZE SYMPTOMS] Response contains aiText: ${!!responseData.aiText}`);
-    console.log(`[ANALYZE SYMPTOMS] aiText length: ${responseData.aiText.length} characters`);
+    console.log(`[ANALYZE SYMPTOMS] ✅ Response ready - Specialization: "${finalSpecialization}", Doctors: ${recommendedDoctors.length}`);
     
     return res.json({
       success: true,
