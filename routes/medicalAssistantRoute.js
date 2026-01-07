@@ -27,16 +27,15 @@ medicalAssistantRouter.get('/test', async (req, res) => {
     try {
       const { GoogleGenerativeAI } = await import('@google/generative-ai');
       const testGenAI = new GoogleGenerativeAI(trimmedKey);
-      // Try different model names
+      // Use correct model names: gemini-1.5-flash or gemini-1.0-pro
       let model;
       try {
-        model = testGenAI.getGenerativeModel({ model: 'gemini-1.5-flash-latest' });
+        model = testGenAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
       } catch (e1) {
         try {
-          model = testGenAI.getGenerativeModel({ model: 'gemini-1.5-pro-latest' });
+          model = testGenAI.getGenerativeModel({ model: 'gemini-1.0-pro' });
         } catch (e2) {
-          // Use default model
-          model = testGenAI.getGenerativeModel();
+          throw new Error(`Both models failed. gemini-1.5-flash: ${e1.message}, gemini-1.0-pro: ${e2.message}`);
         }
       }
       const result = await model.generateContent('Say "test"');

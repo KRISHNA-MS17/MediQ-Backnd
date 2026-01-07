@@ -88,7 +88,7 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   console.log(`[GEMINI VERIFY] @ ${timestamp} - API key verified: length=${geminiApiKey.length}`);
 
   // Create a fresh model instance for each request to avoid caching
-  // Try different model names - if one fails, try the next
+  // Use correct model names: gemini-1.5-flash or gemini-1.0-pro
   let model;
   const safetySettings = [
     {
@@ -107,37 +107,27 @@ async function generateAIResponse(patientInput, availableSpecializations) {
     maxOutputTokens: 1024,
   };
   
-  // Try gemini-1.5-flash-latest first
+  // Try gemini-1.5-flash first (faster, recommended)
   try {
     model = genAI.getGenerativeModel({ 
-      model: 'gemini-1.5-flash-latest',
+      model: 'gemini-1.5-flash',
       safetySettings,
       generationConfig
     });
-    console.log(`[GEMINI MODEL] Using model: gemini-1.5-flash-latest`);
+    console.log(`[GEMINI MODEL] Using model: gemini-1.5-flash`);
   } catch (modelError) {
-    console.warn(`[GEMINI MODEL] gemini-1.5-flash-latest failed: ${modelError.message}`);
-    // Try gemini-1.5-pro-latest
+    console.warn(`[GEMINI MODEL] gemini-1.5-flash failed: ${modelError.message}`);
+    // Fallback to gemini-1.0-pro
     try {
       model = genAI.getGenerativeModel({ 
-        model: 'gemini-1.5-pro-latest',
+        model: 'gemini-1.0-pro',
         safetySettings,
         generationConfig
       });
-      console.log(`[GEMINI MODEL] Using model: gemini-1.5-pro-latest`);
+      console.log(`[GEMINI MODEL] Using model: gemini-1.0-pro`);
     } catch (modelError2) {
-      console.warn(`[GEMINI MODEL] gemini-1.5-pro-latest failed: ${modelError2.message}`);
-      // Try without specifying model (uses default)
-      try {
-        model = genAI.getGenerativeModel({
-          safetySettings,
-          generationConfig
-        });
-        console.log(`[GEMINI MODEL] Using default model (no model name specified)`);
-      } catch (modelError3) {
-        console.error(`[GEMINI MODEL] All model attempts failed. Last error: ${modelError3.message}`);
-        throw new Error(`Failed to initialize Gemini model. Please check available models. Error: ${modelError3.message}`);
-      }
+      console.error(`[GEMINI MODEL] Both models failed. gemini-1.5-flash error: ${modelError.message}, gemini-1.0-pro error: ${modelError2.message}`);
+      throw new Error(`Failed to initialize Gemini model. Tried gemini-1.5-flash and gemini-1.0-pro. Please check API key and model availability.`);
     }
   }
 
