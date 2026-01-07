@@ -14,6 +14,19 @@ export const createAvailability = async (req, res) => {
             return res.json({ success: false, message: "Missing required fields" });
         }
 
+        // Validate date - cannot create slots for past dates
+        const today = new Date().toISOString().split('T')[0];
+        if (date < today) {
+            return res.json({ success: false, message: "Cannot create slots for past dates. Please select today or a future date." });
+        }
+
+        // Validate recurring pattern dates if recurring
+        if (isRecurring && recurringPattern) {
+            if (recurringPattern.repeatUntil && recurringPattern.repeatUntil < today) {
+                return res.json({ success: false, message: "Repeat until date cannot be in the past. Please select today or a future date." });
+            }
+        }
+
         // Validate time format
         const timeRegex = /^([0-1][0-9]|2[0-3]):[0-5][0-9]$/;
         if (!timeRegex.test(startTime) || !timeRegex.test(endTime)) {
@@ -49,23 +62,32 @@ export const createAvailability = async (req, res) => {
                 endDate.setDate(startDate.getDate() + (repeatCount * 7));
             }
 
+            // Ensure end date is not in the past
+            const todayDate = new Date(today);
+            if (endDate < todayDate) {
+                return res.json({ success: false, message: "Recurring pattern end date cannot be in the past." });
+            }
+
             let currentDate = new Date(startDate);
             while (currentDate <= endDate) {
-                const dayOfWeek = currentDate.getDay();
-                if (daysOfWeek.includes(dayOfWeek)) {
-                    const dateStr = currentDate.toISOString().split('T')[0];
-                    const slot = new availabilitySlotModel({
-                        doctorId,
-                        date: dateStr,
-                        startTime,
-                        endTime,
-                        slotPeriod: period,
-                        capacity,
-                        isRecurring: true,
-                        recurringPattern: { daysOfWeek, repeatUntil, repeatCount },
-                        isActive: true // Explicitly set to true
-                    });
-                    slots.push(slot);
+                const dateStr = currentDate.toISOString().split('T')[0];
+                // Only create slots for today and future dates
+                if (dateStr >= today) {
+                    const dayOfWeek = currentDate.getDay();
+                    if (daysOfWeek.includes(dayOfWeek)) {
+                        const slot = new availabilitySlotModel({
+                            doctorId,
+                            date: dateStr,
+                            startTime,
+                            endTime,
+                            slotPeriod: period,
+                            capacity,
+                            isRecurring: true,
+                            recurringPattern: { daysOfWeek, repeatUntil, repeatCount },
+                            isActive: true // Explicitly set to true
+                        });
+                        slots.push(slot);
+                    }
                 }
                 currentDate.setDate(currentDate.getDate() + 1);
             }
