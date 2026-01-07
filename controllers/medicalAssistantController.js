@@ -195,13 +195,15 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   console.log(`[GEMINI MODEL] Cached model: ${cachedWorkingModel || 'none'}`);
   
   // Create a fresh model instance for each request to avoid caching
+  // NOTE: HARM_CATEGORY_MEDICAL is NOT a valid category in Gemini API
+  // Valid categories are: HATE_SPEECH, SEXUALLY_EXPLICIT, DANGEROUS_CONTENT, HARASSMENT, CIVIC_INTEGRITY
   const safetySettings = [
     {
-      category: 'HARM_CATEGORY_MEDICAL',
+      category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
       threshold: 'BLOCK_MEDIUM_AND_ABOVE'
     },
     {
-      category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+      category: 'HARM_CATEGORY_HARASSMENT',
       threshold: 'BLOCK_MEDIUM_AND_ABOVE'
     }
   ];
