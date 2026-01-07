@@ -579,13 +579,8 @@ export const analyzeSymptoms = async (req, res) => {
       lowerInput === greeting.toLowerCase() // Only exact match, not partial
     );
     
-    // Generate debug nonce for ALL responses (including greetings)
-    const debugNonce = `NONCE-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
-    const backendTimestamp = new Date().toISOString();
-    
     // Only return greeting response for exact greetings, not short symptom descriptions
     if (isGreeting && patientInput.length <= 15) {
-      // Even greetings should have debugNonce to prove dynamism
       return res.json({
         success: true,
         data: {
@@ -593,8 +588,6 @@ export const analyzeSymptoms = async (req, res) => {
           aiText: "Hello! I'm your medical assistant. Please describe your symptoms, and I'll provide first-aid guidance and suggest the right doctor for you.",
           suggestedSpeciality: null,
           isSerious: false,
-          debugNonce: debugNonce,
-          backendTimestamp: backendTimestamp,
         },
       });
     }
@@ -728,8 +721,6 @@ export const analyzeSymptoms = async (req, res) => {
       aiText: aiResponse.aiText.trim(), // RAW Gemini-generated text
       suggestedSpeciality: finalSpecialization,
       recommendedDoctors: recommendedDoctors, // Array of available doctors
-      debugNonce: debugNonce,
-      backendTimestamp: backendTimestamp,
     };
     
     // Add emergency warning if needed
