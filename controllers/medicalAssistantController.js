@@ -3,10 +3,22 @@ import doctorModel from '../models/doctorModel.js';
 
 // Initialize Gemini AI
 const geminiApiKey = (process.env.GEMINI_API_KEY || '').trim().replace(/^["']|["']$/g, '');
+console.log('═══════════════════════════════════════════════════════════════');
+console.log('[GEMINI INIT] Initializing Gemini AI...');
+console.log(`[GEMINI INIT] GEMINI_API_KEY from env exists: ${!!process.env.GEMINI_API_KEY}`);
+console.log(`[GEMINI INIT] GEMINI_API_KEY from env length: ${process.env.GEMINI_API_KEY?.length || 0}`);
+console.log(`[GEMINI INIT] geminiApiKey after trim exists: ${!!geminiApiKey}`);
+console.log(`[GEMINI INIT] geminiApiKey after trim length: ${geminiApiKey.length}`);
+console.log(`[GEMINI INIT] geminiApiKey first 10 chars: ${geminiApiKey.substring(0, 10)}...`);
+console.log(`[GEMINI INIT] genAI instance will be created: ${!!geminiApiKey}`);
 if (!geminiApiKey) {
   console.warn('⚠️  GEMINI_API_KEY not found. Medical Assistant will use fallback mode only.');
+} else {
+  console.log('✅ GEMINI_API_KEY found and configured');
 }
 const genAI = geminiApiKey ? new GoogleGenerativeAI(geminiApiKey) : null;
+console.log(`[GEMINI INIT] genAI instance created: ${!!genAI}`);
+console.log('═══════════════════════════════════════════════════════════════');
 
 /**
  * Get available specializations from database
@@ -45,10 +57,35 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   console.log(`[GEMINI REQUEST] Input Length: ${patientInput.length} characters`);
   console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
   
+  // Verify API key configuration BEFORE making API call
+  console.log(`[GEMINI CHECK] @ ${timestamp} - Verifying API key configuration...`);
+  console.log(`[GEMINI CHECK] genAI instance exists: ${!!genAI}`);
+  console.log(`[GEMINI CHECK] geminiApiKey variable exists: ${!!geminiApiKey}`);
+  console.log(`[GEMINI CHECK] GEMINI_API_KEY from env exists: ${!!process.env.GEMINI_API_KEY}`);
+  console.log(`[GEMINI CHECK] GEMINI_API_KEY from env length: ${process.env.GEMINI_API_KEY?.length || 0}`);
+  console.log(`[GEMINI CHECK] geminiApiKey after trim length: ${geminiApiKey?.length || 0}`);
+  if (geminiApiKey) {
+    console.log(`[GEMINI CHECK] geminiApiKey first 10 chars: ${geminiApiKey.substring(0, 10)}...`);
+    console.log(`[GEMINI CHECK] geminiApiKey last 10 chars: ...${geminiApiKey.substring(geminiApiKey.length - 10)}`);
+  }
+  
   if (!genAI || !geminiApiKey) {
     console.error(`[GEMINI ERROR] @ ${timestamp} - Gemini API not configured`);
-    throw new Error('Gemini API not configured');
+    console.error(`[GEMINI ERROR] genAI instance: ${!!genAI}`);
+    console.error(`[GEMINI ERROR] geminiApiKey variable: ${!!geminiApiKey}`);
+    console.error(`[GEMINI ERROR] GEMINI_API_KEY from env exists: ${!!process.env.GEMINI_API_KEY}`);
+    console.error(`[GEMINI ERROR] GEMINI_API_KEY from env length: ${process.env.GEMINI_API_KEY?.length || 0}`);
+    console.error(`[GEMINI ERROR] geminiApiKey after trim length: ${geminiApiKey?.length || 0}`);
+    throw new Error('Gemini API not configured - GEMINI_API_KEY environment variable is missing or invalid');
   }
+  
+  // Verify API key format
+  if (geminiApiKey.length < 20) {
+    console.error(`[GEMINI ERROR] @ ${timestamp} - API key seems too short (${geminiApiKey.length} chars)`);
+    throw new Error('Gemini API key appears to be invalid (too short)');
+  }
+  
+  console.log(`[GEMINI VERIFY] @ ${timestamp} - API key verified: length=${geminiApiKey.length}`);
 
   // Create a fresh model instance for each request to avoid caching
   const model = genAI.getGenerativeModel({ 
@@ -105,8 +142,20 @@ IMPORTANT:
     console.log(`[GEMINI API CALL] @ ${timestamp} - Calling Gemini API with Request ID: ${requestId}`);
     console.log(`[GEMINI API CALL] Prompt length: ${prompt.length} characters`);
     console.log(`[GEMINI API CALL] Prompt includes user input: ${prompt.includes(patientInput) ? 'YES ✓' : 'NO ✗'}`);
+    console.log(`[GEMINI API CALL] API Key configured: ${!!geminiApiKey}`);
+    console.log(`[GEMINI API CALL] API Key length: ${geminiApiKey?.length || 0}`);
+    console.log(`[GEMINI API CALL] genAI instance: ${!!genAI}`);
+    console.log(`[GEMINI API CALL] Model instance created: ${!!model}`);
+    console.log(`[GEMINI API CALL] About to call model.generateContent() with API key...`);
     
+    const callStartTime = Date.now();
+    console.log(`[GEMINI API CALL] Starting API call at ${new Date().toISOString()}`);
     const result = await model.generateContent(prompt);
+    const callEndTime = Date.now();
+    const callDuration = callEndTime - callStartTime;
+    
+    console.log(`[GEMINI API CALL] ✅ API call completed successfully in ${callDuration}ms`);
+    console.log(`[GEMINI API CALL] API key was used successfully!`);
     const response = await result.response;
     const text = response.text();
     
@@ -139,7 +188,8 @@ IMPORTANT:
       const cleanedText = jsonMatch[0].replace(/```json\n?/g, '').replace(/```\n?/g, '').trim();
       parsedResponse = JSON.parse(cleanedText);
     } catch (parseError) {
-      console.warn('[GEMINI] JSON parse failed, extracting fields manually:', parseError.message);
+      console.error('[GEMINI] JSON parse failed, extracting fields manually:', parseError.message);
+      console.error('[GEMINI] Parse error details:', parseError);
       const cleanedText = jsonMatch[0];
       
       // Extract aiText and specialization
@@ -232,8 +282,14 @@ IMPORTANT:
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
     console.error(`[GEMINI ERROR] @ ${errorTimestamp}`);
     console.error(`[GEMINI ERROR] Request ID: ${requestId}`);
-    console.error(`[GEMINI ERROR] Error message: ${error.message}`);
-    console.error(`[GEMINI ERROR] Error stack:`, error.stack);
+    console.error(`[GEMINI ERROR] Error Name: ${error.name}`);
+    console.error(`[GEMINI ERROR] Error Message: ${error.message}`);
+    console.error(`[GEMINI ERROR] Error Code: ${error.code || 'N/A'}`);
+    console.error(`[GEMINI ERROR] Error Status: ${error.status || 'N/A'}`);
+    console.error(`[GEMINI ERROR] Error Status Code: ${error.statusCode || 'N/A'}`);
+    console.error(`[GEMINI ERROR] Error Response:`, error.response?.data || 'N/A');
+    console.error(`[GEMINI ERROR] Full Error:`, JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
+    console.error(`[GEMINI ERROR] Error Stack:`, error.stack);
     console.error('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     throw error;
   }
@@ -316,6 +372,17 @@ async function findRecommendedDoctors(specialization, limit = 3) {
  */
 export const analyzeSymptoms = async (req, res) => {
   try {
+    // Check if Gemini API is configured BEFORE processing request
+    if (!genAI || !geminiApiKey) {
+      console.error('[ANALYZE SYMPTOMS] Gemini API not configured - GEMINI_API_KEY missing');
+      return res.json({
+        success: false,
+        message: 'AI service is not configured. The GEMINI_API_KEY environment variable is missing. Please contact support.',
+        error: 'GEMINI_API_KEY_NOT_SET',
+        requiresRetry: false,
+      });
+    }
+    
     const { symptoms } = req.body;
     
     if (!symptoms || !symptoms.trim()) {
@@ -389,17 +456,48 @@ export const analyzeSymptoms = async (req, res) => {
       console.error('═══════════════════════════════════════════════════════════════');
       console.error(`[ANALYZE SYMPTOMS ERROR] @ ${errorTimestamp}`);
       console.error(`[ANALYZE SYMPTOMS ERROR] User Input: "${patientInput}"`);
-      console.error(`[ANALYZE SYMPTOMS ERROR] Error: ${error.message}`);
+      console.error(`[ANALYZE SYMPTOMS ERROR] Error Name: ${error.name}`);
+      console.error(`[ANALYZE SYMPTOMS ERROR] Error Message: ${error.message}`);
+      console.error(`[ANALYZE SYMPTOMS ERROR] Error Code: ${error.code || 'N/A'}`);
+      console.error(`[ANALYZE SYMPTOMS ERROR] Error Status: ${error.status || 'N/A'}`);
+      console.error(`[ANALYZE SYMPTOMS ERROR] Error Response:`, error.response?.data || 'N/A');
+      console.error(`[ANALYZE SYMPTOMS ERROR] Full Error Object:`, JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
       console.error(`[ANALYZE SYMPTOMS ERROR] Stack: ${error.stack}`);
       console.error('═══════════════════════════════════════════════════════════════\n');
       
       // FAIL-SAFE: Return error instead of static fallback
       // DO NOT return generic chatbot response
+      console.error('[ANALYZE SYMPTOMS] Returning error response to client');
+      
+      // Provide more specific error messages
+      let errorMessage = 'AI service is currently unavailable. Please try again in a moment or contact support.';
+      let errorType = 'gemini_error';
+      
+      if (error.message?.includes('Gemini API not configured') || error.message?.includes('GEMINI_API_KEY')) {
+        errorMessage = 'AI service is not configured. The GEMINI_API_KEY environment variable is missing. Please contact support.';
+        errorType = 'config_error';
+      } else if (error.message?.includes('timeout') || error.code === 'ETIMEDOUT') {
+        errorMessage = 'AI service request timed out. Please try again.';
+        errorType = 'timeout_error';
+      } else if (error.message?.includes('quota') || error.message?.includes('rate limit')) {
+        errorMessage = 'AI service quota exceeded. Please try again later.';
+        errorType = 'quota_error';
+      } else if (error.message?.includes('API key') || error.message?.includes('authentication')) {
+        errorMessage = 'AI service authentication failed. Please contact support.';
+        errorType = 'auth_error';
+      } else if (error.message) {
+        // Include error message in development for debugging
+        if (process.env.NODE_ENV === 'development') {
+          errorMessage = `AI service error: ${error.message}`;
+        }
+      }
+      
       return res.json({
         success: false,
-        message: 'AI service is currently unavailable. Please try again in a moment or contact support.',
+        message: errorMessage,
         error: process.env.NODE_ENV === 'development' ? error.message : undefined,
-        requiresRetry: true,
+        requiresRetry: errorType !== 'config_error' && errorType !== 'auth_error',
+        errorType: errorType,
       });
     }
     
