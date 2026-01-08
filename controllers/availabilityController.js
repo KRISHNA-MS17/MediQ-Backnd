@@ -73,20 +73,20 @@ export const createAvailability = async (req, res) => {
                 const dateStr = currentDate.toISOString().split('T')[0];
                 // Only create slots for today and future dates
                 if (dateStr >= today) {
-                    const dayOfWeek = currentDate.getDay();
-                    if (daysOfWeek.includes(dayOfWeek)) {
-                        const slot = new availabilitySlotModel({
-                            doctorId,
-                            date: dateStr,
-                            startTime,
-                            endTime,
-                            slotPeriod: period,
-                            capacity,
-                            isRecurring: true,
-                            recurringPattern: { daysOfWeek, repeatUntil, repeatCount },
-                            isActive: true // Explicitly set to true
-                        });
-                        slots.push(slot);
+                const dayOfWeek = currentDate.getDay();
+                if (daysOfWeek.includes(dayOfWeek)) {
+                    const slot = new availabilitySlotModel({
+                        doctorId,
+                        date: dateStr,
+                        startTime,
+                        endTime,
+                        slotPeriod: period,
+                        capacity,
+                        isRecurring: true,
+                        recurringPattern: { daysOfWeek, repeatUntil, repeatCount },
+                        isActive: true // Explicitly set to true
+                    });
+                    slots.push(slot);
                     }
                 }
                 currentDate.setDate(currentDate.getDate() + 1);
