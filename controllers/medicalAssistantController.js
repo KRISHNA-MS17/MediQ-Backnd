@@ -96,21 +96,39 @@ async function detectWorkingModel() {
     try {
       console.log(`[GEMINI MODEL] Testing model: ${modelName}`);
       const model = genAI.getGenerativeModel({ model: modelName });
-      const result = await model.generateContent('test');
+      
+      // Use a simple test with timeout
+      const testPromise = model.generateContent('Say "test"');
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Model test timeout')), 10000)
+      );
+      
+      const result = await Promise.race([testPromise, timeoutPromise]);
       const response = await result.response;
       const text = response.text();
-      if (text) {
+      
+      if (text && text.trim().length > 0) {
         cachedWorkingModel = modelName;
         console.log(`[GEMINI MODEL] ✅ Working model detected and cached: ${modelName}`);
+        console.log(`[GEMINI MODEL] Test response: "${text.substring(0, 50)}..."`);
         return modelName;
+      } else {
+        console.log(`[GEMINI MODEL] ⚠️ Model ${modelName} returned empty response`);
       }
     } catch (error) {
-      console.log(`[GEMINI MODEL] ❌ Model ${modelName} failed: ${error.message}`);
+      const errorMsg = error.message || String(error);
+      console.log(`[GEMINI MODEL] ❌ Model ${modelName} failed: ${errorMsg}`);
+      
+      // Log more details for debugging
+      if (error.status || error.code) {
+        console.log(`[GEMINI MODEL] Error status: ${error.status}, code: ${error.code}`);
+      }
       continue;
     }
   }
   
   console.error('[GEMINI MODEL] ❌ No working model found after trying all models!');
+  console.error('[GEMINI MODEL] Tried models:', modelsToTry.join(', '));
   return null;
 }
 
@@ -181,18 +199,30 @@ async function generateAIResponse(patientInput, availableSpecializations) {
   
   console.log(`[GEMINI VERIFY] @ ${timestamp} - API key verified: length=${geminiApiKey.length}`);
 
-  // Use gemini-2.5-flash directly (known working model from test endpoint)
-  // Skip detection to avoid delays - we know this model works
-  let workingModelName = cachedWorkingModel || 'gemini-2.5-flash';
+  // Try to use cached model first, otherwise detect a working model
+  let workingModelName = cachedWorkingModel;
   
-  // Cache it for future requests
-  if (!cachedWorkingModel) {
-    cachedWorkingModel = 'gemini-2.5-flash';
-    workingModelName = 'gemini-2.5-flash';
+  // If no cached model, detect one
+  if (!workingModelName) {
+    console.log(`[GEMINI MODEL] No cached model, detecting working model...`);
+    try {
+      workingModelName = await detectWorkingModel();
+      if (workingModelName) {
+        cachedWorkingModel = workingModelName;
+        console.log(`[GEMINI MODEL] ✅ Detected and cached working model: ${workingModelName}`);
+      } else {
+        console.error(`[GEMINI MODEL] ❌ Model detection failed - no working model found`);
+        throw new Error('No working Gemini model could be detected. All model attempts failed.');
+      }
+    } catch (detectError) {
+      console.error(`[GEMINI MODEL] ❌ Model detection error: ${detectError.message}`);
+      // Clear cache to force re-detection on next request
+      cachedWorkingModel = null;
+      throw new Error(`Model detection failed: ${detectError.message}`);
+    }
+  } else {
+    console.log(`[GEMINI MODEL] Using cached model: ${workingModelName}`);
   }
-  
-  console.log(`[GEMINI MODEL] Using model: ${workingModelName} (direct, no detection)`);
-  console.log(`[GEMINI MODEL] Cached model: ${cachedWorkingModel || 'none'}`);
   
   // Create a fresh model instance for each request to avoid caching
   // NOTE: HARM_CATEGORY_MEDICAL is NOT a valid category in Gemini API
@@ -223,13 +253,22 @@ async function generateAIResponse(patientInput, availableSpecializations) {
     });
     console.log(`[GEMINI MODEL] ✅ Model instance created: ${workingModelName}`);
   } catch (modelError) {
-    console.error(`[GEMINI MODEL] ❌ Failed with ${workingModelName}: ${modelError.message}`);
-    // Try detection as fallback
-    console.log(`[GEMINI MODEL] Attempting model detection...`);
+    console.error(`[GEMINI MODEL] ❌ Failed to create model instance with ${workingModelName}: ${modelError.message}`);
+    console.error(`[GEMINI MODEL] Error details:`, {
+      name: modelError.name,
+      message: modelError.message,
+      code: modelError.code,
+      status: modelError.status,
+    });
+    
+    // Clear the cached model since it's not working
     cachedWorkingModel = null;
+    
+    // Try to detect a new working model
+    console.log(`[GEMINI MODEL] Attempting to detect a new working model...`);
     try {
       const detectedModel = await detectWorkingModel();
-      if (detectedModel) {
+      if (detectedModel && detectedModel !== workingModelName) {
         workingModelName = detectedModel;
         cachedWorkingModel = detectedModel;
         model = genAI.getGenerativeModel({ 
@@ -237,12 +276,16 @@ async function generateAIResponse(patientInput, availableSpecializations) {
           safetySettings,
           generationConfig
         });
-        console.log(`[GEMINI MODEL] ✅ Using detected model: ${workingModelName}`);
+        console.log(`[GEMINI MODEL] ✅ Successfully switched to detected model: ${workingModelName}`);
+      } else if (detectedModel) {
+        // Same model was detected, but it failed - this is a real error
+        throw new Error(`Model ${workingModelName} was detected but failed to create instance. Error: ${modelError.message}`);
       } else {
-        throw new Error(`Model detection failed. Original error: ${modelError.message}`);
+        throw new Error(`Model detection failed. Could not find any working model. Original error: ${modelError.message}`);
       }
     } catch (detectError) {
-      throw new Error(`Failed to create model instance. Tried ${workingModelName} and detection failed. Error: ${detectError.message}`);
+      console.error(`[GEMINI MODEL] ❌ Model detection also failed: ${detectError.message}`);
+      throw new Error(`Failed to create model instance. Tried ${workingModelName}, then detection failed. Detection error: ${detectError.message}. Original error: ${modelError.message}`);
     }
   }
 
